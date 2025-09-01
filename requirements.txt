@@ -1,0 +1,52 @@
+# requirements.txt
+# Core web framework - FastAPI
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# Slack SDK
+slack-sdk==3.26.2
+
+# AI/ML libraries
+anthropic==0.8.1
+openai==1.8.1
+
+# Google APIs
+google-api-python-client==2.114.0
+google-auth==2.25.2
+google-auth-oauthlib==1.2.0
+google-auth-httplib2==0.2.0
+
+# Vector database
+chromadb==0.4.18
+
+# Document processing
+PyPDF2==3.0.1
+python-docx==1.1.0
+openpyxl==3.1.2
+pandas==2.1.4
+beautifulsoup4==4.12.2
+
+# Web scraping and HTTP
+requests==2.31.0
+lxml==4.9.4
+
+# Utility libraries
+python-dotenv==1.0.0
+python-dateutil==2.8.2
+
+# Logging and monitoring
+structlog==23.2.0
+
+# Security
+cryptography==41.0.8
+
+# Development and testing
+pytest==7.4.3
+pytest-flask==1.3.0
+black==23.12.0
+flake8==6.1.0
+
+# Optional: For advanced document processing
+# mammoth==1.6.0  # For better .docx processing
+# pdfplumber==0.10.3  # Alternative PDF processor
+# textract==1.6.5  # Universal text extraction
