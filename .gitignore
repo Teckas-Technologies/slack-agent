@@ -1,0 +1,71 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+env/
+*.venv
+Pipfile.lock
+
+# FastAPI / Uvicorn logs
+*.log
+logs/
+*.sqlite3
+
+# Cache files
+.cache/
+*.bak
+*.swp
+*.swo
+
+# Environment variables & secrets
+.env
+.env.local
+.env.production
+.env.test
+.envrc
+*.key
+
+# IDE / Editor settings
+.vscode/
+.idea/
+*.iml
+
+# Python dependency management
+poetry.lock
+*.egg-info/
+dist/
+build/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# MyPy & Pytest cache
+.mypy_cache/
+.pytest_cache/
+
+# LangChain specific
+langchain_cache/
+
+# Web3 / Ethereum / Blockchain related
+keystore/
+node_modules/
+truffle-config.js
+hardhat.config.js
+ganache-db/
+
+# Docker & Deployment
+docker-compose.override.yml
+docker-compose*.yml
+.Dockerfile
+.dockerignore
+
+# Gunicorn / Uvicorn
+*.pid
+*.sock
+
+# Other system files
+.DS_Store
+Thumbs.db
