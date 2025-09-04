@@ -6,6 +6,7 @@ import anthropic
 import openai
 from datetime import datetime
 from .document_processor import DocumentProcessor
+from config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -19,20 +20,20 @@ class QueryEngine:
         self.anthropic_client = None
         
         # Initialize OpenAI if API key is available
-        if os.environ.get('OPENAI_API_KEY'):
-            self.openai_client = openai.OpenAI(api_key=os.environ['OPENAI_API_KEY'])
+        if Config.OPENAI_API_KEY:
+            self.openai_client = openai.OpenAI(api_key=Config.OPENAI_API_KEY)
         
         # Initialize Anthropic if API key is available
-        if os.environ.get('ANTHROPIC_API_KEY'):
-            self.anthropic_client = anthropic.Anthropic(api_key=os.environ['ANTHROPIC_API_KEY'])
+        if Config.ANTHROPIC_API_KEY:
+            self.anthropic_client = anthropic.Anthropic(api_key=Config.ANTHROPIC_API_KEY)
         
         # Document processor for search
         self.doc_processor = DocumentProcessor()
         
-        # Configuration
+        # Configuration - Make similarity threshold more lenient
         self.max_context_length = 4000
         self.max_search_results = 8
-        self.similarity_threshold = 0.7
+        self.similarity_threshold = 1.5  # More lenient threshold (ChromaDB uses distance, lower is better)
 
     def process_query(self, query: str) -> str:
         """Process user query and return response"""
@@ -45,20 +46,31 @@ class QueryEngine:
                 num_results=self.max_search_results
             )
 
+            logger.info(f"Found {len(search_results)} search results")
+
             if not search_results:
-                return "❌ I couldn't find any relevant documents to answer your question. Try using the `/refresh` command to update the document index."
+                # Check if we have any documents at all
+                stats = self.doc_processor.get_document_stats()
+                if stats.get('total_documents', 0) == 0:
+                    return "📚 No documents have been indexed yet. Please use the `/refresh` command to index your documents first."
+                else:
+                    return f"❌ I couldn't find any relevant documents to answer your question among {stats.get('total_documents', 0)} indexed documents. Try rephrasing your question or using the `/refresh` command."
 
-            # Filter results by similarity threshold
-            relevant_results = [
-                result for result in search_results 
-                if result.get('distance', 1.0) < self.similarity_threshold
-            ]
+            # Log search results for debugging
+            for i, result in enumerate(search_results):
+                distance = result.get('distance', 'unknown')
+                doc_name = result.get('metadata', {}).get('doc_name', 'Unknown')
+                logger.info(f"Result {i}: distance={distance}, doc='{doc_name}'")
 
-            if not relevant_results:
-                return f"🔍 I found some documents, but none seem directly relevant to your question: '{query}'. Try rephrasing your question or being more specific."
+            # Take only the most relevant result for a focused response
+            relevant_results = search_results[:min(1, len(search_results))]
+            
+            # If we have results with very poor similarity, inform the user
+            if relevant_results and relevant_results[0].get('distance', 0) > 1.2:
+                logger.warning(f"Best match has distance {relevant_results[0].get('distance', 0)}, which is quite high")
 
-            # Generate response using AI
-            response = self._generate_ai_response(query, relevant_results)
+            # Always generate focused response (AI or direct)
+            response = self._generate_focused_response(query, relevant_results)
 
             # Add source attribution
             sources = self._format_sources(relevant_results)
@@ -73,22 +85,30 @@ class QueryEngine:
     def _generate_ai_response(self, query: str, search_results: List[Dict[str, Any]]) -> str:
         """Generate AI response based on search results"""
         try:
+            logger.info(f"Generating AI response. Anthropic available: {self.anthropic_client is not None}, OpenAI available: {self.openai_client is not None}")
+            
             # Prepare context from search results
             context = self._prepare_context(search_results)
+            logger.info(f"Prepared context length: {len(context)} characters")
             
             # Create prompt
             prompt = self._create_prompt(query, context)
 
             # Try Anthropic first (Claude), then fallback to OpenAI
             if self.anthropic_client:
+                logger.info("Using Anthropic (Claude) for response")
                 return self._get_anthropic_response(prompt)
             elif self.openai_client:
+                logger.info("Using OpenAI (GPT) for response")
                 return self._get_openai_response(prompt)
             else:
+                logger.warning("No AI clients available, using simple response")
                 return self._generate_simple_response(query, search_results)
 
         except Exception as e:
             logger.error(f"Error generating AI response: {str(e)}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             return self._generate_simple_response(query, search_results)
 
     def _prepare_context(self, search_results: List[Dict[str, Any]]) -> str:
@@ -117,7 +137,7 @@ class QueryEngine:
 
     def _create_prompt(self, query: str, context: str) -> str:
         """Create prompt for AI model"""
-        prompt = f"""You are a helpful document assistant. Answer the user's question based on the provided document context. Be concise, accurate, and helpful.
+        prompt = f"""Answer the user's question based on the provided document context. Be very concise and direct.
 
 Context from relevant documents:
 {context}
@@ -125,12 +145,10 @@ Context from relevant documents:
 User Question: {query}
 
 Instructions:
-1. Answer based only on the information provided in the context
-2. If the context doesn't contain enough information to fully answer the question, say so
-3. Be specific and cite relevant details from the documents
-4. Keep your response concise but comprehensive
-5. If you find conflicting information, mention it
-6. Use a friendly, professional tone
+1. Give a short, direct answer (1-2 sentences maximum)
+2. Extract only the most relevant information that directly answers the question
+3. Don't include unnecessary details or explanations
+4. If the context doesn't contain the answer, say "Information not found in documents"
 
 Answer:"""
 
@@ -188,34 +206,69 @@ Answer:"""
         
         return "\n".join(response_parts)
 
-    def _format_sources(self, search_results: List[Dict[str, Any]]) -> str:
-        """Format source information"""
-        sources = []
-        seen_docs = set()
+    def _generate_focused_response(self, query: str, search_results: List[Dict[str, Any]]) -> str:
+        """Generate focused response with AI if available, otherwise direct extraction"""
+        if not search_results:
+            return "No relevant information found."
         
-        for result in search_results:
-            metadata = result['metadata']
-            doc_name = metadata.get('doc_name', 'Unknown Document')
-            doc_source = metadata.get('doc_source', 'unknown')
-            doc_url = metadata.get('url', '')
-            
-            # Avoid duplicate documents
-            doc_key = f"{doc_name}_{doc_source}"
-            if doc_key in seen_docs:
-                continue
-            seen_docs.add(doc_key)
-            
-            # Format source entry
-            source_icon = "📄" if doc_source == "google_drive" else "🏢" if doc_source == "confluence" else "📋"
-            
-            if doc_url:
-                source_entry = f"{source_icon} [{doc_name}]({doc_url}) ({doc_source})"
-            else:
-                source_entry = f"{source_icon} {doc_name} ({doc_source})"
-            
-            sources.append(source_entry)
+        # Try AI response first if available
+        if self.anthropic_client or self.openai_client:
+            try:
+                return self._generate_ai_response(query, search_results)
+            except Exception as e:
+                logger.error(f"AI response failed, falling back to direct extraction: {e}")
+        
+        # Direct extraction and formatting
+        result = search_results[0]
+        content = result['content'].strip()
+        
+        # Clean up the content and format it better
+        import re
+        
+        # Remove excessive whitespace
+        content = re.sub(r'\s+', ' ', content)
+        
+        # Try to extract structured content (lists, numbered items)
+        lines = content.split('.')
+        formatted_lines = []
+        
+        for line in lines[:5]:  # Take first 5 sentences/points
+            line = line.strip()
+            if line and len(line) > 10:
+                # Format numbered items
+                if re.match(r'^\d+\s*[a-zA-Z]', line):
+                    formatted_lines.append(line)
+                # Format lettered items
+                elif re.match(r'^[a-z]\.\s*', line):
+                    formatted_lines.append('  ' + line)
+                else:
+                    formatted_lines.append(line)
+        
+        if formatted_lines:
+            return '\n'.join(formatted_lines)
+        
+        # Fallback to first 300 characters if no structure found
+        return content[:300] + "..." if len(content) > 300 else content
 
-        return "\n".join(sources)
+    def _format_sources(self, search_results: List[Dict[str, Any]]) -> str:
+        """Format source information - show only the most relevant source"""
+        if not search_results:
+            return "No sources found"
+        
+        # Only show the first/most relevant source
+        result = search_results[0]
+        metadata = result['metadata']
+        doc_name = metadata.get('doc_name', 'Unknown Document')
+        doc_source = metadata.get('doc_source', 'unknown')
+        doc_url = metadata.get('url', '')
+        
+        # Format source entry
+        source_icon = "📄" if doc_source == "google_drive" else "🏢" if doc_source == "confluence" else "📋"
+        
+        if doc_url:
+            return f"{source_icon} [{doc_name}]({doc_url})"
+        else:
+            return f"{source_icon} {doc_name}"
 
     def get_stats(self) -> Dict[str, Any]:
         """Get query engine statistics"""

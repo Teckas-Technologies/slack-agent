@@ -14,10 +14,16 @@ class ConfluenceHandler:
     """Handle Confluence document operations"""
 
     def __init__(self):
-        self.base_url = os.environ.get('CONFLUENCE_BASE_URL', '').rstrip('/')
-        self.username = os.environ.get('CONFLUENCE_USERNAME', '')
-        self.api_token = os.environ.get('CONFLUENCE_API_TOKEN', '')
-
+        from config import Config
+        
+        self.base_url = Config.CONFLUENCE_BASE_URL.rstrip('/') if Config.CONFLUENCE_BASE_URL else ''
+        self.username = Config.CONFLUENCE_USERNAME or ''
+        self.api_token = Config.CONFLUENCE_API_TOKEN or ''
+        
+        # Configuration for organization-wide access
+        confluence_spaces = Config.CONFLUENCE_SPACES or ''
+        self.organization_spaces = [space.strip() for space in confluence_spaces.split(',') if space.strip()]
+        
         if not all([self.base_url, self.username, self.api_token]):
             logger.warning("Confluence credentials not properly configured")
             return
@@ -52,7 +58,7 @@ class ConfluenceHandler:
             return False
 
     def get_all_documents(self) -> List[Dict[str, Any]]:
-        """Get all accessible documents from Confluence"""
+        """Get documents from specified organization spaces in Confluence"""
         try:
             if not all([self.base_url, self.username, self.api_token]):
                 logger.warning("Confluence not properly configured, returning empty list")
@@ -60,16 +66,30 @@ class ConfluenceHandler:
 
             documents = []
 
-            # Get all spaces first
-            spaces = self._get_spaces()
+            # If specific organization spaces are configured, use those
+            if self.organization_spaces:
+                logger.info(f"Processing configured organization spaces: {', '.join(self.organization_spaces)}")
+                
+                for space_key in self.organization_spaces:
+                    try:
+                        logger.info(f"Processing Confluence space: {space_key}")
+                        space_documents = self._get_space_documents(space_key)
+                        documents.extend(space_documents)
+                    except Exception as e:
+                        logger.error(f"Error processing space {space_key}: {str(e)}")
+                        continue
+            else:
+                # Fallback: Get all accessible spaces (but warn it's not organization-specific)
+                logger.warning("No specific organization spaces configured, fetching all accessible spaces")
+                spaces = self._get_spaces()
 
-            for space in spaces:
-                space_key = space['key']
-                logger.info(f"Processing Confluence space: {space_key}")
+                for space in spaces:
+                    space_key = space['key']
+                    logger.info(f"Processing Confluence space: {space_key}")
 
-                # Get pages from this space
-                space_documents = self._get_space_documents(space_key)
-                documents.extend(space_documents)
+                    # Get pages from this space
+                    space_documents = self._get_space_documents(space_key)
+                    documents.extend(space_documents)
 
             logger.info(f"Found {len(documents)} documents in Confluence")
             return documents

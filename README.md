@@ -156,7 +156,15 @@ Show me the latest product roadmap
 
 ## 🐳 Deployment Options
 
-### Docker Compose (Recommended)
+### 1. Azure App Service (Production Recommended)
+```bash
+# Automated Azure deployment
+./deploy-azure.sh
+```
+**Features**: Auto-scaling, managed infrastructure, built-in monitoring  
+**Guide**: See [AZURE_DEPLOYMENT.md](AZURE_DEPLOYMENT.md)
+
+### 2. Docker Compose (Self-Hosted)
 ```bash
 # Production deployment
 docker-compose up -d
@@ -194,7 +202,7 @@ python app.py
 uvicorn app:app --reload --port 8000
 ```
 
-### Production with Uvicorn
+### 3. Production with Uvicorn (Manual)
 ```bash
 # Run with uvicorn (included in requirements)
 uvicorn app:app --host 0.0.0.0 --port 8000 --workers 2
@@ -202,6 +210,11 @@ uvicorn app:app --host 0.0.0.0 --port 8000 --workers 2
 # Or with auto-reload for development
 uvicorn app:app --reload --port 8000
 ```
+
+### 4. Other Cloud Platforms
+- **AWS**: Use Elastic Beanstalk or ECS with provided Docker config
+- **Google Cloud**: Deploy to Cloud Run or App Engine
+- **Heroku**: Use `startup.sh` as startup command
 
 ### 📚 API Documentation
 Once running, visit:

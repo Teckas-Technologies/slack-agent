@@ -1,5 +1,4 @@
-# app.py
-import os
+# main.py
 import logging
 from typing import Dict, Any
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
@@ -8,6 +7,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from slack_sdk import WebClient
 from slack_sdk.signature import SignatureVerifier
+from config import Config
 from app.document_processor import DocumentProcessor
 from app.query_engine import QueryEngine
 from app.google_drive_handler import GoogleDriveHandler
@@ -22,19 +22,30 @@ logger = logging.getLogger(__name__)
 # Global variables for the agent
 agent = None
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     global agent
     # Startup
     logger.info("Starting Slack Document Agent...")
+
+    # Validate configuration
+    try:
+        Config.validate_required()
+        logger.info("Configuration validated successfully")
+    except ValueError as e:
+        logger.error(f"Configuration error: {e}")
+        raise
+
     agent = SlackDocumentAgent()
     logger.info("Slack Document Agent initialized successfully")
-    
+
     yield
-    
+
     # Shutdown
     logger.info("Shutting down Slack Document Agent...")
+
 
 # Create FastAPI app with lifespan management
 app = FastAPI(
@@ -46,10 +57,20 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+
 class SlackDocumentAgent:
     def __init__(self):
-        self.slack_client = WebClient(token=os.environ["SLACK_BOT_TOKEN"])
-        self.signature_verifier = SignatureVerifier(os.environ["SLACK_SIGNING_SECRET"])
+        # Initialize Slack client with SSL context for certificate issues
+        import ssl
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        
+        self.slack_client = WebClient(
+            token=Config.SLACK_BOT_TOKEN,
+            ssl=ssl_context
+        )
+        self.signature_verifier = SignatureVerifier(Config.SLACK_SIGNING_SECRET)
 
         # Initialize document handlers
         self.gdrive_handler = GoogleDriveHandler()
@@ -145,7 +166,7 @@ class SlackDocumentAgent:
         try:
             loop = asyncio.get_event_loop()
             stats = await loop.run_in_executor(None, self.query_engine.get_stats)
-            
+
             status_text = f"""📊 **Document Agent Status**
 
 **Documents Indexed:** {stats.get('total_documents', 0)}
@@ -177,7 +198,7 @@ class SlackDocumentAgent:
         """Background document refresh"""
         try:
             loop = asyncio.get_event_loop()
-            
+
             # Refresh Google Drive documents
             gdrive_docs = await loop.run_in_executor(None, self.gdrive_handler.get_all_documents)
 
@@ -190,8 +211,13 @@ class SlackDocumentAgent:
 
             for doc in all_docs:
                 try:
-                    await loop.run_in_executor(None, self.doc_processor.process_document, doc)
-                    processed += 1
+                    # Use the same document processor instance as the query engine
+                    result = await loop.run_in_executor(None, self.doc_processor.process_document, doc)
+                    if result:
+                        processed += 1
+                        logger.info(f"Successfully processed document: {doc.get('name', 'Unknown')}")
+                    else:
+                        logger.error(f"Failed to process document: {doc.get('name', 'Unknown')}")
 
                     # Send progress update every 10 documents
                     if processed % 10 == 0:
@@ -235,7 +261,7 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
     try:
         # Get request body
         body = await request.body()
-        
+
         # Verify request signature
         if not agent.verify_request(body, dict(request.headers)):
             raise HTTPException(status_code=403, detail="Invalid signature")
@@ -273,16 +299,16 @@ async def health_check():
             return JSONResponse(
                 status_code=503,
                 content={
-                    "status": "unhealthy", 
+                    "status": "unhealthy",
                     "message": "Agent not initialized",
                     "timestamp": datetime.now().isoformat()
                 }
             )
-        
+
         # Get basic stats
         loop = asyncio.get_event_loop()
         stats = await loop.run_in_executor(None, agent.query_engine.get_stats)
-        
+
         return {
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
@@ -308,10 +334,10 @@ async def manual_refresh(background_tasks: BackgroundTasks):
     try:
         if agent is None:
             raise HTTPException(status_code=503, detail="Agent not initialized")
-        
+
         # Start background refresh
         background_tasks.add_task(agent._refresh_documents_background, "", "")
-        
+
         return {"status": "refresh started", "timestamp": datetime.now().isoformat()}
     except HTTPException:
         raise
@@ -326,10 +352,10 @@ async def get_status():
     try:
         if agent is None:
             raise HTTPException(status_code=503, detail="Agent not initialized")
-        
+
         loop = asyncio.get_event_loop()
         stats = await loop.run_in_executor(None, agent.query_engine.get_stats)
-        
+
         return {
             "status": "running",
             "timestamp": datetime.now().isoformat(),
@@ -354,10 +380,10 @@ async def get_docs_summary():
     try:
         if agent is None:
             raise HTTPException(status_code=503, detail="Agent not initialized")
-        
+
         loop = asyncio.get_event_loop()
         stats = await loop.run_in_executor(None, agent.doc_processor.get_document_stats)
-        
+
         return {
             "summary": stats,
             "timestamp": datetime.now().isoformat()
@@ -366,6 +392,44 @@ async def get_docs_summary():
         raise
     except Exception as e:
         logger.error(f"Docs summary error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/test-search")
+async def test_search():
+    """Test document search functionality"""
+    try:
+        if agent is None:
+            raise HTTPException(status_code=503, detail="Agent not initialized")
+        
+        loop = asyncio.get_event_loop()
+        
+        # Get basic stats
+        stats = await loop.run_in_executor(None, agent.doc_processor.get_document_stats)
+        
+        # Try a simple search
+        search_results = await loop.run_in_executor(
+            None, 
+            agent.doc_processor.search_documents, 
+            "test", 
+            5
+        )
+        
+        return {
+            "stats": stats,
+            "search_results": len(search_results),
+            "results": [
+                {
+                    "content": result['content'][:100] + "..." if len(result['content']) > 100 else result['content'],
+                    "metadata": result['metadata'],
+                    "distance": result.get('distance', 'unknown')
+                }
+                for result in search_results[:3]
+            ],
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Test search error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -381,13 +445,14 @@ async def not_found_handler(request: Request, exc):
         }
     )
 
+
 @app.exception_handler(500)
 async def internal_error_handler(request: Request, exc):
     logger.error(f"Internal server error: {exc}")
     return JSONResponse(
         status_code=500,
         content={
-            "error": "Internal Server Error", 
+            "error": "Internal Server Error",
             "message": "An unexpected error occurred",
             "timestamp": datetime.now().isoformat()
         }
@@ -396,19 +461,14 @@ async def internal_error_handler(request: Request, exc):
 
 if __name__ == "__main__":
     import uvicorn
-    
-    # Configuration
-    host = "0.0.0.0"
-    port = int(os.environ.get("PORT", 8000))
-    reload = os.environ.get("DEBUG", "False").lower() == "true"
-    
-    logger.info(f"Starting FastAPI server on {host}:{port}")
-    
+
+    logger.info(f"Starting FastAPI server on {Config.HOST}:{Config.PORT}")
+
     uvicorn.run(
-        "app:app",
-        host=host,
-        port=port,
-        reload=reload,
+        "main:app",
+        host=Config.HOST,
+        port=Config.PORT,
+        reload=Config.DEBUG,
         log_level="info",
         access_log=True
     )

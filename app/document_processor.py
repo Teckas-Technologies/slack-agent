@@ -5,10 +5,10 @@ import hashlib
 import json
 from typing import List, Dict, Any, Optional
 import chromadb
-from chromadb.config import Settings
 import openai
 from datetime import datetime
 import re
+from config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ class DocumentProcessor:
     """Process and index documents for search and retrieval"""
 
     def __init__(self):
-        self.openai_client = openai.OpenAI(api_key=os.environ.get('OPENAI_API_KEY'))
+        self.openai_client = openai.OpenAI(api_key=Config.OPENAI_API_KEY)
         self.chroma_client = self._initialize_chromadb()
         self.collection = self._get_or_create_collection()
 
@@ -29,21 +29,19 @@ class DocumentProcessor:
     def _initialize_chromadb(self):
         """Initialize ChromaDB client"""
         try:
-            # Use persistent storage
-            db_path = os.environ.get('CHROMA_DB_PATH', './chroma_db')
+            # Use persistent storage with new client configuration
+            db_path = Config.CHROMA_DB_PATH
+            
+            # Create the directory if it doesn't exist
+            os.makedirs(db_path, exist_ok=True)
 
-            settings = Settings(
-                chroma_db_impl="duckdb+parquet",
-                persist_directory=db_path
-            )
-
-            client = chromadb.Client(settings)
+            client = chromadb.PersistentClient(path=db_path)
             return client
 
         except Exception as e:
             logger.error(f"Error initializing ChromaDB: {str(e)}")
             # Fallback to in-memory database
-            return chromadb.Client()
+            return chromadb.EphemeralClient()
 
     def _get_or_create_collection(self):
         """Get or create document collection"""
@@ -64,10 +62,11 @@ class DocumentProcessor:
 
             logger.info(f"Processing document: {doc_name}")
 
-            # Check if document is already processed and up-to-date
-            if self._is_document_current(document):
-                logger.info(f"Document {doc_name} is already up-to-date")
-                return True
+            # Force reprocessing for debugging - skip currency check
+            # if self._is_document_current(document):
+            #     logger.info(f"Document {doc_name} is already up-to-date")
+            #     return True
+            logger.info(f"Force processing document {doc_name} (currency check disabled)")
 
             # Extract content based on document source
             if document['source'] == 'google_drive':
@@ -82,11 +81,13 @@ class DocumentProcessor:
                 logger.error(f"Unknown document source: {document['source']}")
                 return False
 
+            logger.info(f"Content extraction result for {doc_name}: {type(content_result)}")
             if content_result.get('error'):
                 logger.error(f"Error extracting content from {doc_name}: {content_result['error']}")
                 return False
 
             content = content_result.get('content', '')
+            logger.info(f"Content extracted from {doc_name}: {len(content)} characters")
             if not content.strip():
                 logger.warning(f"No content extracted from {doc_name}")
                 return False
@@ -95,14 +96,18 @@ class DocumentProcessor:
             cleaned_content = self._clean_content(content)
 
             # Create chunks
+            logger.info(f"Creating chunks for {doc_name} from {len(cleaned_content)} cleaned characters")
             chunks = self._create_chunks(cleaned_content, document)
+            logger.info(f"Created {len(chunks)} chunks for {doc_name}")
 
             if not chunks:
                 logger.warning(f"No chunks created for {doc_name}")
                 return False
 
             # Generate embeddings and store
+            logger.info(f"Storing {len(chunks)} chunks for {doc_name}")
             self._store_chunks(chunks, document)
+            logger.info(f"Successfully stored chunks for {doc_name}")
 
             # Update document metadata
             self._update_document_metadata(document)
@@ -112,6 +117,8 @@ class DocumentProcessor:
 
         except Exception as e:
             logger.error(f"Error processing document {document.get('name', 'Unknown')}: {str(e)}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             return False
 
     def _is_document_current(self, document: Dict[str, Any]) -> bool:
@@ -405,22 +412,25 @@ class DocumentProcessor:
         """Get statistics about processed documents"""
         try:
             # Get all chunks (excluding metadata)
-            results = self.collection.get(
-                where={"type": {"$ne": "document_metadata"}}
-            )
+            # Note: Regular chunks don't have "type" field, only metadata chunks do
+            results = self.collection.get()
 
             total_chunks = len(results['ids'])
 
-            # Count unique documents
+            # Count unique documents (filter out metadata entries)
             doc_ids = set()
+            actual_chunks = 0
             for metadata in results['metadatas']:
-                doc_ids.add(metadata.get('doc_id', ''))
+                if metadata and metadata.get('type') != 'document_metadata':
+                    doc_ids.add(metadata.get('doc_id', ''))
+                    actual_chunks += 1
 
             total_documents = len(doc_ids)
 
             return {
                 'total_documents': total_documents,
-                'total_chunks': total_chunks,
+                'total_chunks': actual_chunks,
+                'total_entries': total_chunks,  # Total including metadata
                 'last_updated': datetime.now().isoformat()
             }
 
@@ -438,11 +448,10 @@ class DocumentProcessor:
             # Generate query embedding
             query_embedding = self._generate_embeddings([query])[0]
 
-            # Search in ChromaDB
+            # Search in ChromaDB - don't filter by type since regular chunks don't have "type"
             results = self.collection.query(
                 query_embeddings=[query_embedding],
-                n_results=num_results,
-                where={"type": {"$ne": "document_metadata"}}
+                n_results=num_results
             )
 
             # Format results

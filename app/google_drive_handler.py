@@ -10,6 +10,9 @@ from googleapiclient.http import MediaIoBaseDownload
 import json
 import mimetypes
 
+# Disable Google API discovery cache warnings
+logging.getLogger('googleapiclient.discovery_cache').setLevel(logging.ERROR)
+
 logger = logging.getLogger(__name__)
 
 
