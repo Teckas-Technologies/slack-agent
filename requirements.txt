@@ -5,6 +5,7 @@ uvicorn[standard]==0.24.0
 
 # Slack SDK
 slack-sdk==3.26.2
+slack-bolt==1.18.1
 
 # AI/ML libraries
 anthropic>=0.25.0

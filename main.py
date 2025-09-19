@@ -116,9 +116,11 @@ class SlackDocumentAgent:
 
     def _clean_message(self, message: str) -> str:
         """Remove bot mention and clean message"""
-        # Remove <@BOTID> mentions
+        # Remove <@BOTID> mentions (including InfoBot mentions)
         import re
         message = re.sub(r'<@\w+>', '', message).strip()
+        # Also remove common bot name variations
+        message = re.sub(r'@?InfoBot\s*', '', message, flags=re.IGNORECASE).strip()
         return message
 
     async def _handle_query(self, query: str, channel_id: str, thread_ts: str, user_id: str) -> None:
@@ -275,11 +277,15 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
         # Handle app mention events
         event = data.get("event", {})
         if event.get("type") == "app_mention" and event.get("user") != data.get("authed_users", [None])[0]:
-            background_tasks.add_task(agent.handle_message, event)
+            # Ignore bot's own messages
+            if not event.get("bot_id"):
+                background_tasks.add_task(agent.handle_message, event)
 
         # Handle direct message events
         elif event.get("type") == "message" and event.get("channel_type") == "im":
-            background_tasks.add_task(agent.handle_message, event)
+            # Ignore bot's own messages and messages with subtypes (like file uploads)
+            if not event.get("bot_id") and not event.get("subtype"):
+                background_tasks.add_task(agent.handle_message, event)
 
         return {"status": "ok"}
 
@@ -327,6 +333,43 @@ async def health_check():
             }
         )
 
+
+@app.post("/slack/slash")
+async def slack_slash_commands(request: Request, background_tasks: BackgroundTasks):
+    """Handle Slack slash commands"""
+    try:
+        # Get request body
+        body = await request.body()
+
+        # Verify request signature
+        if not agent.verify_request(body, dict(request.headers)):
+            raise HTTPException(status_code=403, detail="Invalid signature")
+
+        # Parse form data
+        from urllib.parse import parse_qs
+        form_data = parse_qs(body.decode('utf-8'))
+
+        command = form_data.get('command', [None])[0]
+        user_id = form_data.get('user_id', [None])[0]
+        channel_id = form_data.get('channel_id', [None])[0]
+        text = form_data.get('text', [''])[0]
+
+        if command == '/refresh':
+            # Acknowledge immediately
+            response_text = "🔄 Starting document refresh... This may take a few minutes."
+
+            # Start background refresh
+            background_tasks.add_task(agent._refresh_documents_background, channel_id, None)
+
+            return {"text": response_text}
+        else:
+            return {"text": f"Unknown command: {command}"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in slash command: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/refresh")
 async def manual_refresh(background_tasks: BackgroundTasks):

@@ -30,10 +30,11 @@ class QueryEngine:
         # Document processor for search
         self.doc_processor = DocumentProcessor()
         
-        # Configuration - Make similarity threshold more lenient
+        # Configuration - Adjust for better search performance
         self.max_context_length = 4000
-        self.max_search_results = 8
-        self.similarity_threshold = 1.5  # More lenient threshold (ChromaDB uses distance, lower is better)
+        self.max_search_results = 5  # Reduce to get more focused results
+        self.similarity_threshold = 0.8  # Threshold for OpenAI embeddings
+        self.simple_similarity_threshold = 500.0  # Higher threshold for simple embeddings
 
     def process_query(self, query: str) -> str:
         """Process user query and return response"""
@@ -62,19 +63,45 @@ class QueryEngine:
                 doc_name = result.get('metadata', {}).get('doc_name', 'Unknown')
                 logger.info(f"Result {i}: distance={distance}, doc='{doc_name}'")
 
-            # Take only the most relevant result for a focused response
-            relevant_results = search_results[:min(1, len(search_results))]
-            
-            # If we have results with very poor similarity, inform the user
-            if relevant_results and relevant_results[0].get('distance', 0) > 1.2:
-                logger.warning(f"Best match has distance {relevant_results[0].get('distance', 0)}, which is quite high")
+            # Determine which threshold to use based on embedding type
+            # Check if we're using simple embeddings (indicated by higher distances)
+            avg_distance = sum(result.get('distance', 0) for result in search_results[:3]) / min(3, len(search_results))
+            threshold = self.simple_similarity_threshold if avg_distance > 100 else self.similarity_threshold
+            logger.info(f"Using threshold {threshold} (avg distance: {avg_distance:.2f})")
+
+            # Filter results by similarity threshold first
+            relevant_results = []
+            for result in search_results:
+                distance = result.get('distance', float('inf'))
+                if distance <= threshold:
+                    relevant_results.append(result)
+                else:
+                    logger.info(f"Excluding result with distance {distance} (threshold: {threshold})")
+
+            # If no results meet the threshold, return not found message
+            if not relevant_results:
+                logger.info(f"No results found within similarity threshold {threshold}")
+                return "❌ I couldn't find any relevant documents to answer your question. Try rephrasing your question or use the `/refresh` command to update the document index."
+
+            # Take top 3 most relevant results
+            relevant_results = relevant_results[:min(3, len(relevant_results))]
+
+            logger.info(f"Using {len(relevant_results)} relevant results for response")
 
             # Always generate focused response (AI or direct)
             response = self._generate_focused_response(query, relevant_results)
 
-            # Add source attribution
-            sources = self._format_sources(relevant_results)
-            final_response = f"{response}\n\n📋 **Sources:**\n{sources}"
+            # Add source attribution only if the response contains actual information
+            if "Information not found" in response or "❌" in response:
+                # Don't add sources for "not found" responses
+                final_response = response
+            else:
+                # Add source attribution for successful responses
+                sources = self._format_sources(relevant_results)
+                if sources != "No sources found":
+                    final_response = f"{response}\n\n{sources}"
+                else:
+                    final_response = response
 
             return final_response
 
@@ -137,7 +164,7 @@ class QueryEngine:
 
     def _create_prompt(self, query: str, context: str) -> str:
         """Create prompt for AI model"""
-        prompt = f"""Answer the user's question based on the provided document context. Be very concise and direct.
+        prompt = f"""Answer the user's question based ONLY on the provided document context. Be very concise and direct.
 
 Context from relevant documents:
 {context}
@@ -145,10 +172,11 @@ Context from relevant documents:
 User Question: {query}
 
 Instructions:
-1. Give a short, direct answer (1-2 sentences maximum)
+1. If the context contains relevant information to answer the question, provide a short, direct answer (1-2 sentences maximum)
 2. Extract only the most relevant information that directly answers the question
-3. Don't include unnecessary details or explanations
-4. If the context doesn't contain the answer, say "Information not found in documents"
+3. If the context does NOT contain relevant information to answer the question, respond EXACTLY with: "Information not found in documents"
+4. Do not make assumptions or provide general knowledge - only answer based on the provided context
+5. Do not mention document names in your answer
 
 Answer:"""
 
@@ -158,7 +186,7 @@ Answer:"""
         """Get response from Anthropic Claude"""
         try:
             response = self.anthropic_client.messages.create(
-                model="claude-3-sonnet-20240229",
+                model="claude-3-5-sonnet-20241022",
                 max_tokens=1000,
                 temperature=0.1,
                 messages=[
@@ -251,24 +279,36 @@ Answer:"""
         return content[:300] + "..." if len(content) > 300 else content
 
     def _format_sources(self, search_results: List[Dict[str, Any]]) -> str:
-        """Format source information - show only the most relevant source"""
+        """Format source information according to requirements"""
         if not search_results:
             return "No sources found"
-        
-        # Only show the first/most relevant source
-        result = search_results[0]
-        metadata = result['metadata']
-        doc_name = metadata.get('doc_name', 'Unknown Document')
-        doc_source = metadata.get('doc_source', 'unknown')
-        doc_url = metadata.get('url', '')
-        
-        # Format source entry
-        source_icon = "📄" if doc_source == "google_drive" else "🏢" if doc_source == "confluence" else "📋"
-        
-        if doc_url:
-            return f"{source_icon} [{doc_name}]({doc_url})"
+
+        # Format according to the example: "Here is the reference [Document Link]"
+        unique_sources = {}
+
+        for result in search_results:
+            metadata = result['metadata']
+            doc_name = metadata.get('doc_name', 'Unknown Document')
+            doc_url = metadata.get('url', '')
+
+            if doc_name not in unique_sources:
+                unique_sources[doc_name] = doc_url
+
+        # Create reference links
+        source_links = []
+        for doc_name, doc_url in unique_sources.items():
+            if doc_url:
+                source_links.append(f"[{doc_name}]({doc_url})")
+            else:
+                source_links.append(doc_name)
+
+        if source_links:
+            if len(source_links) == 1:
+                return f"Here is the reference: {source_links[0]}"
+            else:
+                return f"Here are the references: {', '.join(source_links)}"
         else:
-            return f"{source_icon} {doc_name}"
+            return "No sources found"
 
     def get_stats(self) -> Dict[str, Any]:
         """Get query engine statistics"""
@@ -333,13 +373,13 @@ Answer:"""
         if self.anthropic_client:
             try:
                 test_response = self.anthropic_client.messages.create(
-                    model="claude-3-haiku-20240307",
+                    model="claude-3-5-haiku-20241022",
                     max_tokens=50,
                     messages=[{"role": "user", "content": "Hello, respond with 'Claude is working'"}]
                 )
                 results['anthropic'] = {
                     'status': 'connected',
-                    'model': 'claude-3-haiku-20240307'
+                    'model': 'claude-3-5-haiku-20241022'
                 }
             except Exception as e:
                 results['anthropic'] = {

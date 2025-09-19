@@ -4,11 +4,10 @@ import logging
 import hashlib
 import json
 from typing import List, Dict, Any, Optional
-import chromadb
-import openai
 from datetime import datetime
 import re
 from config import Config
+from .vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -17,42 +16,17 @@ class DocumentProcessor:
     """Process and index documents for search and retrieval"""
 
     def __init__(self):
-        self.openai_client = openai.OpenAI(api_key=Config.OPENAI_API_KEY)
-        self.chroma_client = self._initialize_chromadb()
-        self.collection = self._get_or_create_collection()
+        self.vector_store = VectorStore()
 
         # Chunking parameters
         self.chunk_size = 1000
         self.chunk_overlap = 200
         self.max_chunk_size = 2000
 
-    def _initialize_chromadb(self):
-        """Initialize ChromaDB client"""
-        try:
-            # Use persistent storage with new client configuration
-            db_path = Config.CHROMA_DB_PATH
-            
-            # Create the directory if it doesn't exist
-            os.makedirs(db_path, exist_ok=True)
+        # Document type specific settings
+        self.structured_chunk_size = 50  # rows for CSV/spreadsheets
+        self.min_chunk_length = 50  # minimum characters for a chunk
 
-            client = chromadb.PersistentClient(path=db_path)
-            return client
-
-        except Exception as e:
-            logger.error(f"Error initializing ChromaDB: {str(e)}")
-            # Fallback to in-memory database
-            return chromadb.EphemeralClient()
-
-    def _get_or_create_collection(self):
-        """Get or create document collection"""
-        try:
-            return self.chroma_client.get_or_create_collection(
-                name="documents",
-                metadata={"description": "Document collection for Slack agent"}
-            )
-        except Exception as e:
-            logger.error(f"Error creating collection: {str(e)}")
-            raise
 
     def process_document(self, document: Dict[str, Any]) -> bool:
         """Process a single document and add to vector store"""
@@ -62,11 +36,10 @@ class DocumentProcessor:
 
             logger.info(f"Processing document: {doc_name}")
 
-            # Force reprocessing for debugging - skip currency check
-            # if self._is_document_current(document):
-            #     logger.info(f"Document {doc_name} is already up-to-date")
-            #     return True
-            logger.info(f"Force processing document {doc_name} (currency check disabled)")
+            # Check if document is already current (optional optimization)
+            if self._is_document_current(document):
+                logger.info(f"Document {doc_name} is already up-to-date")
+                return True
 
             # Extract content based on document source
             if document['source'] == 'google_drive':
@@ -126,17 +99,18 @@ class DocumentProcessor:
         try:
             doc_id = document['id']
 
-            # Query existing chunks for this document
-            results = self.collection.get(
-                where={"doc_id": doc_id},
-                limit=1
+            # Search for existing chunks for this document
+            search_results = self.vector_store.search_documents(
+                query="",  # Empty query to get any document
+                num_results=1,
+                filter_criteria={"doc_id": doc_id}
             )
 
-            if not results['ids']:
+            if not search_results:
                 return False
 
             # Check if modification time has changed
-            stored_metadata = results['metadatas'][0]
+            stored_metadata = search_results[0]['metadata']
             stored_modified = stored_metadata.get('modified_time')
             current_modified = document.get('modified_time')
 
@@ -148,18 +122,25 @@ class DocumentProcessor:
 
     def _clean_content(self, content: str) -> str:
         """Clean and preprocess document content"""
-        # Remove excessive whitespace
-        content = re.sub(r'\s+', ' ', content)
+        if not content:
+            return ""
 
-        # Remove special characters that might interfere with processing
-        content = re.sub(r'[^\w\s\.\,\!\?\;\:\-\(\)\[\]\"\'\/\\]', '', content)
+        # Remove excessive whitespace but preserve paragraph structure
+        content = re.sub(r'[ \t]+', ' ', content)  # Multiple spaces/tabs to single space
+        content = re.sub(r'\n\s*\n\s*\n+', '\n\n', content)  # Multiple newlines to double newline
+
+        # Remove special characters that might interfere with processing but keep essential punctuation
+        content = re.sub(r'[^\w\s\.\,\!\?\;\:\-\(\)\[\]\"\'\/\\@#$%&+=<>{}|~`*]', '', content)
 
         # Normalize line endings
         content = content.replace('\r\n', '\n').replace('\r', '\n')
 
-        # Remove empty lines
-        lines = [line.strip() for line in content.split('\n') if line.strip()]
+        # Remove leading/trailing whitespace from lines while preserving structure
+        lines = [line.strip() for line in content.split('\n')]
         content = '\n'.join(lines)
+
+        # Remove excessive empty lines but keep paragraph breaks
+        content = re.sub(r'\n{3,}', '\n\n', content)
 
         return content.strip()
 
@@ -174,60 +155,97 @@ class DocumentProcessor:
             # For structured data, split by rows/sections
             chunks = self._create_structured_chunks(content, document)
         else:
-            # For text documents, use semantic chunking
+            # For text documents, use intelligent chunking
             chunks = self._create_text_chunks(content, document)
 
         return chunks
 
     def _create_text_chunks(self, content: str, document: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Create chunks for text-based documents"""
+        """Create intelligent chunks for text-based documents"""
         chunks = []
 
-        # Split by paragraphs first
-        paragraphs = content.split('\n\n')
+        # First try to split by semantic sections (headers, etc.)
+        sections = self._split_by_sections(content)
+
+        if not sections:
+            # Fallback to paragraph-based chunking
+            sections = content.split('\n\n')
 
         current_chunk = ""
         chunk_index = 0
 
-        for paragraph in paragraphs:
-            paragraph = paragraph.strip()
-            if not paragraph:
+        for section in sections:
+            section = section.strip()
+            if not section or len(section) < self.min_chunk_length:
                 continue
 
-            # Check if adding this paragraph exceeds chunk size
-            potential_chunk = current_chunk + "\n\n" + paragraph if current_chunk else paragraph
+            # Check if adding this section exceeds chunk size
+            potential_chunk = current_chunk + "\n\n" + section if current_chunk else section
 
             if len(potential_chunk) > self.chunk_size and current_chunk:
-                # Store current chunk
-                chunk_data = self._create_chunk_data(
-                    current_chunk, document, chunk_index
-                )
-                chunks.append(chunk_data)
-                chunk_index += 1
+                # Store current chunk if it meets minimum length
+                if len(current_chunk.strip()) >= self.min_chunk_length:
+                    chunk_data = self._create_chunk_data(
+                        current_chunk, document, chunk_index
+                    )
+                    chunks.append(chunk_data)
+                    chunk_index += 1
 
-                # Start new chunk with overlap
-                overlap_text = current_chunk[-self.chunk_overlap:] if len(
-                    current_chunk) > self.chunk_overlap else current_chunk
-                current_chunk = overlap_text + "\n\n" + paragraph
+                # Start new chunk with intelligent overlap
+                overlap_text = self._get_smart_overlap(current_chunk)
+                current_chunk = overlap_text + "\n\n" + section if overlap_text else section
             else:
                 current_chunk = potential_chunk
 
-            # Handle very long paragraphs
+            # Handle very long sections
             if len(current_chunk) > self.max_chunk_size:
-                # Split long paragraph
                 long_chunks = self._split_long_content(current_chunk, document, chunk_index)
                 chunks.extend(long_chunks)
                 chunk_index += len(long_chunks)
                 current_chunk = ""
 
-        # Add final chunk
-        if current_chunk.strip():
+        # Add final chunk if it meets minimum length
+        if current_chunk.strip() and len(current_chunk.strip()) >= self.min_chunk_length:
             chunk_data = self._create_chunk_data(
                 current_chunk, document, chunk_index
             )
             chunks.append(chunk_data)
 
         return chunks
+
+    def _split_by_sections(self, content: str) -> List[str]:
+        """Split content by semantic sections (headers, etc.)"""
+        # Look for common section markers
+        section_patterns = [
+            r'\n\s*#{1,6}\s+.+\n',  # Markdown headers
+            r'\n\s*[A-Z][A-Z\s]{3,}\n',  # ALL CAPS headers
+            r'\n\s*\d+\.\s+[A-Z].+\n',  # Numbered sections
+            r'\n\s*[A-Z][a-z]+:?\s*\n'  # Title case headers
+        ]
+
+        # Try to split by any of these patterns
+        for pattern in section_patterns:
+            sections = re.split(pattern, content)
+            if len(sections) > 1:
+                return [section.strip() for section in sections if section.strip()]
+
+        return []
+
+    def _get_smart_overlap(self, chunk: str) -> str:
+        """Get intelligent overlap from the end of a chunk"""
+        if len(chunk) <= self.chunk_overlap:
+            return chunk
+
+        # Try to find a good breaking point (sentence end)
+        overlap_text = chunk[-self.chunk_overlap:]
+
+        # Look for sentence boundaries in the overlap
+        sentences = re.split(r'[.!?]+', overlap_text)
+        if len(sentences) > 1:
+            # Take the last complete sentence(s)
+            return sentences[-2] + '.' if len(sentences) > 2 else overlap_text
+
+        return overlap_text
 
     def _create_structured_chunks(self, content: str, document: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Create chunks for structured documents (CSV, spreadsheets)"""
@@ -328,24 +346,14 @@ class DocumentProcessor:
             if not chunks:
                 return
 
-            # Generate embeddings for all chunks
-            contents = [chunk['content'] for chunk in chunks]
-            embeddings = self._generate_embeddings(contents)
+            # Store chunks using vector store
+            success = self.vector_store.add_documents(chunks)
 
-            # Prepare data for ChromaDB
-            ids = [chunk['id'] for chunk in chunks]
-            metadatas = [chunk['metadata'] for chunk in chunks]
-            documents = [chunk['content'] for chunk in chunks]
-
-            # Store in ChromaDB
-            self.collection.add(
-                ids=ids,
-                embeddings=embeddings,
-                metadatas=metadatas,
-                documents=documents
-            )
-
-            logger.info(f"Stored {len(chunks)} chunks for document {document['name']}")
+            if success:
+                logger.info(f"Stored {len(chunks)} chunks for document {document['name']}")
+            else:
+                logger.error(f"Failed to store chunks for document {document['name']}")
+                raise Exception("Vector store operation failed")
 
         except Exception as e:
             logger.error(f"Error storing chunks: {str(e)}")
@@ -354,56 +362,40 @@ class DocumentProcessor:
     def _remove_document_chunks(self, doc_id: str):
         """Remove existing chunks for a document"""
         try:
-            # Get existing chunk IDs
-            results = self.collection.get(
-                where={"doc_id": doc_id}
-            )
+            # Remove chunks using vector store filter
+            success = self.vector_store.remove_documents_by_filter({"doc_id": doc_id})
 
-            if results['ids']:
-                self.collection.delete(ids=results['ids'])
-                logger.info(f"Removed {len(results['ids'])} existing chunks for document {doc_id}")
+            if not success:
+                logger.warning(f"Failed to remove existing chunks for document {doc_id}")
 
         except Exception as e:
             logger.error(f"Error removing document chunks: {str(e)}")
 
-    def _generate_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Generate embeddings for text chunks"""
-        try:
-            # Use OpenAI embeddings
-            response = self.openai_client.embeddings.create(
-                model="text-embedding-ada-002",
-                input=texts
-            )
-
-            embeddings = [item.embedding for item in response.data]
-            return embeddings
-
-        except Exception as e:
-            logger.error(f"Error generating embeddings: {str(e)}")
-            # Return zero embeddings as fallback
-            return [[0.0] * 1536] * len(texts)
 
     def _update_document_metadata(self, document: Dict[str, Any]):
         """Update document processing metadata"""
         try:
             metadata_key = f"doc_metadata_{document['id']}"
 
-            metadata = {
-                'doc_id': document['id'],
-                'doc_name': document['name'],
-                'processed_at': datetime.now().isoformat(),
-                'modified_time': document.get('modified_time', ''),
-                'source': document['source']
+            metadata_doc = {
+                'id': metadata_key,
+                'content': json.dumps({
+                    'doc_id': document['id'],
+                    'doc_name': document['name'],
+                    'processed_at': datetime.now().isoformat(),
+                    'modified_time': document.get('modified_time', ''),
+                    'source': document['source']
+                }),
+                'metadata': {
+                    "type": "document_metadata",
+                    "doc_id": document['id'],
+                    "doc_name": document['name'],
+                    "doc_source": document['source']
+                }
             }
 
-            # Store metadata (you might want to use a separate store for this)
-            # For now, we'll create a special metadata document
-            self.collection.add(
-                ids=[metadata_key],
-                documents=[json.dumps(metadata)],
-                metadatas=[{"type": "document_metadata", "doc_id": document['id']}],
-                embeddings=[[0.0] * 1536]  # Zero embedding for metadata
-            )
+            # Store metadata using vector store
+            self.vector_store.add_documents([metadata_doc])
 
         except Exception as e:
             logger.error(f"Error updating document metadata: {str(e)}")
@@ -411,26 +403,14 @@ class DocumentProcessor:
     def get_document_stats(self) -> Dict[str, Any]:
         """Get statistics about processed documents"""
         try:
-            # Get all chunks (excluding metadata)
-            # Note: Regular chunks don't have "type" field, only metadata chunks do
-            results = self.collection.get()
-
-            total_chunks = len(results['ids'])
-
-            # Count unique documents (filter out metadata entries)
-            doc_ids = set()
-            actual_chunks = 0
-            for metadata in results['metadatas']:
-                if metadata and metadata.get('type') != 'document_metadata':
-                    doc_ids.add(metadata.get('doc_id', ''))
-                    actual_chunks += 1
-
-            total_documents = len(doc_ids)
+            # Get stats from vector store
+            vector_stats = self.vector_store.get_collection_stats()
 
             return {
-                'total_documents': total_documents,
-                'total_chunks': actual_chunks,
-                'total_entries': total_chunks,  # Total including metadata
+                'total_documents': vector_stats.get('unique_documents', 0),
+                'total_chunks': vector_stats.get('total_chunks', 0),
+                'total_entries': vector_stats.get('total_entries', 0),
+                'sources': vector_stats.get('sources', []),
                 'last_updated': datetime.now().isoformat()
             }
 
@@ -439,32 +419,29 @@ class DocumentProcessor:
             return {
                 'total_documents': 0,
                 'total_chunks': 0,
+                'total_entries': 0,
+                'sources': [],
                 'last_updated': 'Unknown'
             }
 
     def search_documents(self, query: str, num_results: int = 10) -> List[Dict[str, Any]]:
         """Search for relevant document chunks"""
         try:
-            # Generate query embedding
-            query_embedding = self._generate_embeddings([query])[0]
-
-            # Search in ChromaDB - don't filter by type since regular chunks don't have "type"
-            results = self.collection.query(
-                query_embeddings=[query_embedding],
-                n_results=num_results
+            # Use vector store for search, excluding metadata documents
+            # Note: ChromaDB uses different filter syntax than MongoDB
+            search_results = self.vector_store.search_documents(
+                query=query,
+                num_results=num_results
             )
 
-            # Format results
-            search_results = []
-            for i in range(len(results['ids'][0])):
-                result = {
-                    'content': results['documents'][0][i],
-                    'metadata': results['metadatas'][0][i],
-                    'distance': results['distances'][0][i] if 'distances' in results else 0
-                }
-                search_results.append(result)
+            # Filter out metadata documents from results
+            filtered_results = []
+            for result in search_results:
+                metadata = result.get('metadata', {})
+                if metadata.get('type') != 'document_metadata':
+                    filtered_results.append(result)
 
-            return search_results
+            return filtered_results
 
         except Exception as e:
             logger.error(f"Error searching documents: {str(e)}")
