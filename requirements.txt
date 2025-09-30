@@ -35,6 +35,9 @@ lxml==4.9.4
 python-dotenv==1.0.0
 python-dateutil==2.8.2
 
+# Scheduler for periodic tasks
+APScheduler==3.10.4
+
 # Logging and monitoring
 structlog==23.2.0
 

@@ -14,19 +14,22 @@ from app.google_drive_handler import GoogleDriveHandler
 from app.confluence_handler import ConfluenceHandler
 from datetime import datetime
 import json
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Global variables for the agent
+# Global variables for the agent and scheduler
 agent = None
+scheduler = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
-    global agent
+    global agent, scheduler
     # Startup
     logger.info("Starting Slack Document Agent...")
 
@@ -41,10 +44,28 @@ async def lifespan(app: FastAPI):
     agent = SlackDocumentAgent()
     logger.info("Slack Document Agent initialized successfully")
 
+    # Initialize and start scheduler for periodic document sync
+    scheduler = AsyncIOScheduler()
+
+    # Schedule document sync every 2 minutes
+    scheduler.add_job(
+        agent.scheduled_document_sync,
+        trigger=IntervalTrigger(minutes=2),
+        id='document_sync',
+        name='Periodic document synchronization',
+        replace_existing=True
+    )
+
+    scheduler.start()
+    logger.info("Document sync scheduler started (runs every 2 minutes)")
+
     yield
 
     # Shutdown
     logger.info("Shutting down Slack Document Agent...")
+    if scheduler:
+        scheduler.shutdown()
+        logger.info("Scheduler stopped")
 
 
 # Create FastAPI app with lifespan management
@@ -65,7 +86,7 @@ class SlackDocumentAgent:
         ssl_context = ssl.create_default_context()
         ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
-        
+
         self.slack_client = WebClient(
             token=Config.SLACK_BOT_TOKEN,
             ssl=ssl_context
@@ -80,8 +101,13 @@ class SlackDocumentAgent:
         self.doc_processor = DocumentProcessor()
         self.query_engine = QueryEngine()
 
-        # Track processing status
+        # Track processing status and last sync
         self.processing_status = {}
+        self.last_sync_time = None
+        self.sync_in_progress = False
+
+        # Track processed documents to avoid re-processing unchanged docs
+        self.processed_documents = {}  # {doc_id: modified_time}
 
     def verify_request(self, request_body: bytes, headers: Dict[str, str]) -> bool:
         """Verify Slack request signature"""
@@ -255,6 +281,64 @@ class SlackDocumentAgent:
             thread_ts=thread_ts,
             text="❌ Something went wrong. Please try again or contact support."
         )
+
+    async def scheduled_document_sync(self) -> None:
+        """Scheduled task to sync documents every 2 minutes"""
+        try:
+            # Prevent concurrent syncs
+            if self.sync_in_progress:
+                logger.info("Sync already in progress, skipping scheduled sync")
+                return
+
+            self.sync_in_progress = True
+            logger.info("Starting scheduled document synchronization...")
+
+            loop = asyncio.get_event_loop()
+
+            # Fetch documents from all sources
+            gdrive_docs = await loop.run_in_executor(None, self.gdrive_handler.get_all_documents)
+            confluence_docs = await loop.run_in_executor(None, self.confluence_handler.get_all_documents)
+
+            all_docs = gdrive_docs + confluence_docs
+            logger.info(f"Found {len(all_docs)} total documents ({len(gdrive_docs)} from Drive, {len(confluence_docs)} from Confluence)")
+
+            # Process only new or modified documents
+            new_or_modified = 0
+            skipped = 0
+
+            for doc in all_docs:
+                try:
+                    doc_id = doc['id']
+                    modified_time = doc.get('modified_time', '')
+
+                    # Check if document has been modified since last processing
+                    if doc_id in self.processed_documents:
+                        if self.processed_documents[doc_id] == modified_time:
+                            skipped += 1
+                            continue
+
+                    # Process the document
+                    result = await loop.run_in_executor(None, self.doc_processor.process_document, doc)
+
+                    if result:
+                        # Update tracking
+                        self.processed_documents[doc_id] = modified_time
+                        new_or_modified += 1
+                        logger.info(f"Processed document: {doc.get('name', 'Unknown')}")
+                    else:
+                        logger.warning(f"Failed to process document: {doc.get('name', 'Unknown')}")
+
+                except Exception as e:
+                    logger.error(f"Error processing document {doc.get('name', 'Unknown')}: {str(e)}")
+                    continue
+
+            self.last_sync_time = datetime.now()
+            logger.info(f"Scheduled sync completed: {new_or_modified} processed, {skipped} skipped (unchanged)")
+
+        except Exception as e:
+            logger.error(f"Error in scheduled document sync: {str(e)}")
+        finally:
+            self.sync_in_progress = False
 
 
 @app.post("/slack/events")
