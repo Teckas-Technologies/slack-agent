@@ -15,8 +15,20 @@ class ConfluenceHandler:
 
     def __init__(self):
         from config import Config
-        
-        self.base_url = Config.CONFLUENCE_BASE_URL.rstrip('/') if Config.CONFLUENCE_BASE_URL else ''
+
+        # Handle both old and new Confluence API URL formats
+        base_url = Config.CONFLUENCE_BASE_URL.rstrip('/') if Config.CONFLUENCE_BASE_URL else ''
+
+        # For newer Confluence Cloud instances, API endpoints are under /wiki
+        # Check if we need to add /wiki to the base URL
+        if base_url and not base_url.endswith('/wiki'):
+            # Test both with and without /wiki to find the correct format
+            self.base_url = base_url
+            self.base_url_with_wiki = f"{base_url}/wiki"
+        else:
+            self.base_url = base_url
+            self.base_url_with_wiki = base_url
+
         self.username = Config.CONFLUENCE_USERNAME or ''
         self.api_token = Config.CONFLUENCE_API_TOKEN or ''
         
@@ -40,13 +52,43 @@ class ConfluenceHandler:
             'Accept': 'application/json'
         })
 
+        # Determine correct API endpoint format
+        self.api_base_url = self._determine_api_endpoint()
+
         # Test connection
         self._test_connection()
+
+    def _determine_api_endpoint(self) -> str:
+        """Determine the correct API endpoint format (with or without /wiki)"""
+        try:
+            # Try with /wiki first (newer Confluence Cloud format)
+            test_url = f"{self.base_url_with_wiki}/rest/api/space"
+            response = self.session.get(test_url, params={'limit': 1}, timeout=5)
+
+            if response.status_code in [200, 401, 403]:  # Connection works
+                logger.info(f"Using Confluence API endpoint: {self.base_url_with_wiki}")
+                return self.base_url_with_wiki
+
+            # Try without /wiki (older format)
+            test_url = f"{self.base_url}/rest/api/space"
+            response = self.session.get(test_url, params={'limit': 1}, timeout=5)
+
+            if response.status_code in [200, 401, 403]:  # Connection works
+                logger.info(f"Using Confluence API endpoint: {self.base_url}")
+                return self.base_url
+
+            # Default to /wiki format for Atlassian Cloud
+            logger.warning(f"Could not determine Confluence API format, defaulting to: {self.base_url_with_wiki}")
+            return self.base_url_with_wiki
+
+        except Exception as e:
+            logger.warning(f"Error determining API endpoint: {str(e)}, using default: {self.base_url_with_wiki}")
+            return self.base_url_with_wiki
 
     def _test_connection(self) -> bool:
         """Test Confluence connection"""
         try:
-            response = self.session.get(f"{self.base_url}/rest/api/space")
+            response = self.session.get(f"{self.api_base_url}/rest/api/space")
             if response.status_code == 200:
                 logger.info("Successfully connected to Confluence")
                 return True
@@ -106,7 +148,7 @@ class ConfluenceHandler:
             limit = 50
 
             while True:
-                url = f"{self.base_url}/rest/api/space"
+                url = f"{self.api_base_url}/rest/api/space"
                 params = {
                     'start': start,
                     'limit': limit,
@@ -144,7 +186,7 @@ class ConfluenceHandler:
             limit = 50
 
             while True:
-                url = f"{self.base_url}/rest/api/content"
+                url = f"{self.api_base_url}/rest/api/content"
                 params = {
                     'spaceKey': space_key,
                     'start': start,
@@ -154,16 +196,32 @@ class ConfluenceHandler:
                     'expand': 'version,space,ancestors'
                 }
 
+                logger.info(f"Fetching pages from space {space_key}: {url}")
                 response = self.session.get(url, params=params)
 
                 if response.status_code != 200:
                     logger.error(f"Error fetching pages from space {space_key}: {response.status_code}")
+                    logger.error(f"Response URL: {response.url}")
+                    logger.error(f"Response body: {response.text[:500]}")
                     break
 
                 data = response.json()
                 results = data.get('results', [])
 
                 for page in results:
+                    # Construct proper web URL - webui link is relative
+                    webui_link = page['_links']['webui']
+                    # If webui_link starts with /, prepend base_url
+                    if webui_link.startswith('/'):
+                        # Check if webui already starts with /wiki
+                        if webui_link.startswith('/wiki/'):
+                            page_url = f"{self.base_url}{webui_link}"
+                        else:
+                            # Add /wiki to the path
+                            page_url = f"{self.base_url}/wiki{webui_link}"
+                    else:
+                        page_url = webui_link
+
                     doc_info = {
                         'id': page['id'],
                         'name': page['title'],
@@ -172,7 +230,7 @@ class ConfluenceHandler:
                         'modified_time': page['version']['when'],
                         'version': page['version']['number'],
                         'source': 'confluence',
-                        'url': f"{self.base_url}{page['_links']['webui']}",
+                        'url': page_url,
                         'type': 'page'
                     }
                     documents.append(doc_info)
@@ -195,7 +253,7 @@ class ConfluenceHandler:
             page_id = document['id']
 
             # Get page content with body
-            url = f"{self.base_url}/rest/api/content/{page_id}"
+            url = f"{self.api_base_url}/rest/api/content/{page_id}"
             params = {
                 'expand': 'body.storage,body.view'
             }
@@ -317,7 +375,7 @@ class ConfluenceHandler:
     def _get_page_attachments(self, page_id: str) -> str:
         """Get information about page attachments"""
         try:
-            url = f"{self.base_url}/rest/api/content/{page_id}/child/attachment"
+            url = f"{self.api_base_url}/rest/api/content/{page_id}/child/attachment"
 
             response = self.session.get(url)
 
@@ -345,7 +403,7 @@ class ConfluenceHandler:
         """Get page hierarchy for a space"""
         try:
             # Get root pages (pages without parents in the space)
-            url = f"{self.base_url}/rest/api/content"
+            url = f"{self.api_base_url}/rest/api/content"
             params = {
                 'spaceKey': space_key,
                 'type': 'page',
@@ -384,7 +442,7 @@ class ConfluenceHandler:
     def _get_child_pages(self, page_id: str) -> List[Dict[str, Any]]:
         """Get child pages of a given page"""
         try:
-            url = f"{self.base_url}/rest/api/content/{page_id}/child/page"
+            url = f"{self.api_base_url}/rest/api/content/{page_id}/child/page"
 
             response = self.session.get(url)
 
@@ -412,7 +470,7 @@ class ConfluenceHandler:
     def search_confluence(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
         """Search Confluence content"""
         try:
-            url = f"{self.base_url}/rest/api/content/search"
+            url = f"{self.api_base_url}/rest/api/content/search"
             params = {
                 'cql': f'text ~ "{query}" and type = "page"',
                 'limit': limit,
@@ -430,6 +488,17 @@ class ConfluenceHandler:
 
             search_results = []
             for result in results:
+                # Construct proper web URL
+                webui_link = result['_links']['webui']
+                if webui_link.startswith('/'):
+                    # Add /wiki if not present
+                    if webui_link.startswith('/wiki/'):
+                        page_url = f"{self.base_url}{webui_link}"
+                    else:
+                        page_url = f"{self.base_url}/wiki{webui_link}"
+                else:
+                    page_url = webui_link
+
                 search_result = {
                     'id': result['id'],
                     'name': result['title'],
@@ -437,7 +506,7 @@ class ConfluenceHandler:
                     'space_name': result['space']['name'],
                     'modified_time': result['version']['when'],
                     'source': 'confluence',
-                    'url': f"{self.base_url}{result['_links']['webui']}",
+                    'url': page_url,
                     'type': 'page'
                 }
                 search_results.append(search_result)
@@ -457,7 +526,7 @@ class ConfluenceHandler:
             threshold_date = datetime.now() - timedelta(days=days)
             date_str = threshold_date.strftime('%Y-%m-%d')
 
-            url = f"{self.base_url}/rest/api/content/search"
+            url = f"{self.api_base_url}/rest/api/content/search"
             params = {
                 'cql': f'type = "page" and lastModified >= "{date_str}"',
                 'limit': 50,
@@ -476,6 +545,17 @@ class ConfluenceHandler:
 
             recent_docs = []
             for result in results:
+                # Construct proper web URL
+                webui_link = result['_links']['webui']
+                if webui_link.startswith('/'):
+                    # Add /wiki if not present
+                    if webui_link.startswith('/wiki/'):
+                        page_url = f"{self.base_url}{webui_link}"
+                    else:
+                        page_url = f"{self.base_url}/wiki{webui_link}"
+                else:
+                    page_url = webui_link
+
                 doc_info = {
                     'id': result['id'],
                     'name': result['title'],
@@ -483,7 +563,7 @@ class ConfluenceHandler:
                     'space_name': result['space']['name'],
                     'modified_time': result['version']['when'],
                     'source': 'confluence',
-                    'url': f"{self.base_url}{result['_links']['webui']}",
+                    'url': page_url,
                     'type': 'page'
                 }
                 recent_docs.append(doc_info)
@@ -504,7 +584,7 @@ class ConfluenceHandler:
                 }
 
             # Test basic connectivity
-            response = self.session.get(f"{self.base_url}/rest/api/space", timeout=10)
+            response = self.session.get(f"{self.api_base_url}/rest/api/space", timeout=10)
 
             if response.status_code == 200:
                 spaces = response.json().get('results', [])

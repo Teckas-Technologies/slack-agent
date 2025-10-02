@@ -52,16 +52,29 @@ class GoogleDriveHandler:
     def _initialize_drive_service(self):
         """Initialize Google Drive service"""
         try:
-            # Try service account first (for production)
-            if os.path.exists(os.environ.get('GOOGLE_SERVICE_ACCOUNT_KEY', '')):
-                credentials = ServiceAccountCredentials.from_service_account_file(
-                    os.environ['GOOGLE_SERVICE_ACCOUNT_KEY'],
+            service_account_key = os.environ.get('GOOGLE_SERVICE_ACCOUNT_KEY', '')
+
+            # Method 1: Try JSON content directly from environment variable
+            if service_account_key and service_account_key.strip().startswith('{'):
+                # Service account key is JSON content
+                logger.info("Using service account credentials from environment variable (JSON content)")
+                service_account_info = json.loads(service_account_key)
+                credentials = ServiceAccountCredentials.from_service_account_info(
+                    service_account_info,
                     scopes=['https://www.googleapis.com/auth/drive.readonly']
                 )
+            # Method 2: Try file path
+            elif service_account_key and os.path.exists(service_account_key):
+                logger.info("Using service account credentials from file path")
+                credentials = ServiceAccountCredentials.from_service_account_file(
+                    service_account_key,
+                    scopes=['https://www.googleapis.com/auth/drive.readonly']
+                )
+            # Method 3: OAuth2 credentials (for development)
             else:
-                # Use OAuth2 credentials (for development)
                 creds_path = os.environ.get('GOOGLE_CREDENTIALS_PATH', 'credentials.json')
                 if os.path.exists(creds_path):
+                    logger.info("Using OAuth2 credentials from file")
                     with open(creds_path, 'r') as f:
                         creds_data = json.load(f)
 
@@ -70,10 +83,13 @@ class GoogleDriveHandler:
                         scopes=['https://www.googleapis.com/auth/drive.readonly']
                     )
                 else:
-                    raise FileNotFoundError("No Google credentials found")
+                    raise FileNotFoundError("No Google credentials found. Set GOOGLE_SERVICE_ACCOUNT_KEY with JSON content or file path")
 
             return build('drive', 'v3', credentials=credentials)
 
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse GOOGLE_SERVICE_ACCOUNT_KEY as JSON: {str(e)}")
+            raise ValueError("GOOGLE_SERVICE_ACCOUNT_KEY must be valid JSON content or a file path")
         except Exception as e:
             logger.error(f"Failed to initialize Google Drive service: {str(e)}")
             raise

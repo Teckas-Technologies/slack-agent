@@ -83,7 +83,7 @@ class QueryEngine:
                 logger.info(f"No results found within similarity threshold {threshold}")
                 return "❌ I couldn't find any relevant documents to answer your question. Try rephrasing your question or use the `/refresh` command to update the document index."
 
-            # Take top 3 most relevant results
+            # Take top 3 most relevant results for context
             relevant_results = relevant_results[:min(3, len(relevant_results))]
 
             logger.info(f"Using {len(relevant_results)} relevant results for response")
@@ -96,8 +96,10 @@ class QueryEngine:
                 # Don't add sources for "not found" responses
                 final_response = response
             else:
-                # Add source attribution for successful responses
-                sources = self._format_sources(relevant_results)
+                # Only include the MOST relevant document (first one) as reference
+                # to avoid showing irrelevant secondary sources
+                most_relevant = [relevant_results[0]] if relevant_results else []
+                sources = self._format_sources(most_relevant)
                 if sources != "No sources found":
                     final_response = f"{response}\n\n{sources}"
                 else:

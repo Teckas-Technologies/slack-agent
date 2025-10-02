@@ -157,7 +157,11 @@ OPENAI_API_KEY=sk-your-openai-key
 ANTHROPIC_API_KEY=sk-ant-your-anthropic-key
 
 # Google Drive Configuration
-GOOGLE_SERVICE_ACCOUNT_KEY=/absolute/path/to/service-account-key.json
+# Option 1: Paste JSON content directly (recommended for deployment)
+GOOGLE_SERVICE_ACCOUNT_KEY='{"type":"service_account","project_id":"your-project-id","private_key_id":"...","private_key":"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n","client_email":"bot@project.iam.gserviceaccount.com",...}'
+
+# Option 2: Or use file path
+# GOOGLE_SERVICE_ACCOUNT_KEY=/absolute/path/to/service-account-key.json
 
 # Confluence Configuration
 CONFLUENCE_BASE_URL=https://your-company.atlassian.net
@@ -183,7 +187,7 @@ DEBUG=False
 | SLACK_SIGNING_SECRET | Yes | Signing secret from Slack |
 | OPENAI_API_KEY | One of AI keys | OpenAI API key for embeddings and chat |
 | ANTHROPIC_API_KEY | One of AI keys | Anthropic API key for Claude chat |
-| GOOGLE_SERVICE_ACCOUNT_KEY | Yes* | Path to Google service account JSON |
+| GOOGLE_SERVICE_ACCOUNT_KEY | Yes* | Google service account JSON (as string) or file path |
 | CONFLUENCE_BASE_URL | Yes* | Confluence instance URL |
 | CONFLUENCE_USERNAME | Yes* | Confluence user email |
 | CONFLUENCE_API_TOKEN | Yes* | Confluence API token |
