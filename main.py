@@ -1,4 +1,7 @@
 # main.py
+# Fix SQLite for Azure App Service BEFORE any other imports
+import fix_sqlite  # noqa: F401
+
 import logging
 from typing import Dict, Any
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks

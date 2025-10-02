@@ -347,6 +347,14 @@ az webapp log config \
 3. SLACK_SIGNING_SECRET is correct
 4. Check logs for verification errors
 
+### SQLite Version Error
+
+**Error:** `RuntimeError: Your system has an unsupported version of sqlite3`
+
+**Solution:** Already fixed! The app uses `pysqlite3-binary` which includes a newer SQLite version. Make sure:
+1. `pysqlite3-binary` is in `requirements.txt` ✅
+2. `fix_sqlite.py` is imported first in `main.py` ✅
+
 ### Documents Not Syncing
 
 **Check:**

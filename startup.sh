@@ -3,24 +3,23 @@
 
 echo "Starting InfoBot application..."
 
-# Install dependencies if needed
-if [ ! -d "venv" ]; then
-    echo "Creating virtual environment..."
-    python3 -m venv venv
+# Azure creates 'antenv' automatically, use it if exists
+if [ -d "antenv" ]; then
+    echo "Using Azure's antenv virtual environment..."
+    source antenv/bin/activate
+elif [ -d "venv" ]; then
+    echo "Using venv virtual environment..."
+    source venv/bin/activate
+else
+    echo "No virtual environment found, using system Python..."
 fi
 
-# Activate virtual environment
-source venv/bin/activate
-
-# Upgrade pip
-pip install --upgrade pip
-
-# Install dependencies
-echo "Installing dependencies..."
-pip install -r requirements.txt
-
 # Create ChromaDB directory if it doesn't exist
-mkdir -p chroma_db
+echo "Creating ChromaDB directory..."
+mkdir -p /home/chroma_db
+
+# Change to application directory
+cd /home/site/wwwroot || cd /tmp/*/
 
 # Start the application
 echo "Starting uvicorn server..."

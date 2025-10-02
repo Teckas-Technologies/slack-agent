@@ -19,6 +19,7 @@ google-auth-httplib2==0.2.0
 
 # Vector database
 chromadb==0.4.18
+pysqlite3-binary==0.5.2.post1  # For Azure App Service SQLite compatibility
 
 # Document processing
 PyPDF2==3.0.1
