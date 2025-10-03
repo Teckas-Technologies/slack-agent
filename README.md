@@ -46,9 +46,11 @@ An AI-powered Slack bot that searches and answers questions from your Google Dri
 git clone <repository-url>
 cd slack-agent
 
-# 2. Create virtual environment
+# 2. Create and activate virtual environment
 python3.11 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate  # On macOS/Linux
+# OR
+venv\Scripts\activate     # On Windows
 
 # 3. Install dependencies
 pip install -r requirements.txt
@@ -59,8 +61,15 @@ cp .env.example .env
 # 5. Edit .env with your credentials (see detailed setup below)
 nano .env
 
-# 6. Run the bot
+# 6. Run the bot (make sure virtual environment is activated!)
 ./start.sh
+```
+
+**Important**: Always activate the virtual environment before running the bot:
+```bash
+source venv/bin/activate  # macOS/Linux
+# OR
+venv\Scripts\activate     # Windows
 ```
 
 ## 📖 Detailed Setup Guide
@@ -376,10 +385,43 @@ grep "GOOGLE_SERVICE_ACCOUNT_KEY" .env
 
 ### Option 1: Local Development
 
-#### For Local Testing (with ngrok)
+#### 1.1 Setup Virtual Environment
+
+```bash
+# Create virtual environment
+python3.11 -m venv venv
+
+# Activate virtual environment
+source venv/bin/activate  # On macOS/Linux
+# OR
+venv\Scripts\activate     # On Windows
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Verify installation
+pip list
+```
+
+#### 1.2 Configure Environment
+
+```bash
+# Make sure .env file exists with your credentials
+cat .env
+
+# If not, copy and edit:
+cp .env.example .env
+nano .env  # Add your credentials from Step 1-4
+```
+
+#### 1.3 For Local Testing (with ngrok)
 
 1. **Start the application**:
    ```bash
+   # Make sure virtual environment is activated
+   source venv/bin/activate  # If not already activated
+
+   # Start the bot
    ./start.sh
    ```
 
@@ -404,9 +446,12 @@ grep "GOOGLE_SERVICE_ACCOUNT_KEY" .env
    @InfoBot How many documents are there?
    ```
 
-#### For Local Development (without Slack)
+#### 1.4 For Local Development (without Slack)
 
 ```bash
+# Make sure virtual environment is activated
+source venv/bin/activate
+
 # Start the application
 ./start.sh
 
@@ -417,6 +462,12 @@ grep "GOOGLE_SERVICE_ACCOUNT_KEY" .env
 
 # Test health endpoint
 curl http://localhost:8000/health
+```
+
+**Note**: Every time you open a new terminal, remember to activate the virtual environment:
+```bash
+cd slack-agent
+source venv/bin/activate
 ```
 
 #### View Logs
