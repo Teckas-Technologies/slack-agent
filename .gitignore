@@ -3,24 +3,29 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-.idea
-chroma_db
 # Virtual environment
 venv/
 env/
+antenv/
 *.venv
 Pipfile.lock
+
+# Database
+chroma_db/
+*.db
+*.sqlite3
 
 # FastAPI / Uvicorn logs
 *.log
 logs/
-*.sqlite3
+nohup.out
 
 # Cache files
 .cache/
 *.bak
 *.swp
 *.swo
+*.tmp
 
 # Environment variables & secrets
 .env
@@ -29,6 +34,8 @@ logs/
 .env.test
 .envrc
 *.key
+credentials/
+ssl_certs/*.pem
 
 # IDE / Editor settings
 .vscode/

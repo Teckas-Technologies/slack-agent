@@ -41,9 +41,14 @@ class QueryEngine:
         try:
             logger.info(f"Processing query: {query[:100]}...")
 
+            # Check for special query types first
+            special_response = self._handle_special_queries(query)
+            if special_response:
+                return special_response
+
             # Search for relevant documents
             search_results = self.doc_processor.search_documents(
-                query=query, 
+                query=query,
                 num_results=self.max_search_results
             )
 
@@ -53,9 +58,11 @@ class QueryEngine:
                 # Check if we have any documents at all
                 stats = self.doc_processor.get_document_stats()
                 if stats.get('total_documents', 0) == 0:
-                    return "📚 No documents have been indexed yet. Please use the `/refresh` command to index your documents first."
+                    # No documents indexed - respond with general AI knowledge
+                    return self._generate_general_response(query)
                 else:
-                    return f"❌ I couldn't find any relevant documents to answer your question among {stats.get('total_documents', 0)} indexed documents. Try rephrasing your question or using the `/refresh` command."
+                    # Documents exist but no relevant match - try general AI response
+                    return self._generate_general_response(query)
 
             # Log search results for debugging
             for i, result in enumerate(search_results):
@@ -78,10 +85,10 @@ class QueryEngine:
                 else:
                     logger.info(f"Excluding result with distance {distance} (threshold: {threshold})")
 
-            # If no results meet the threshold, return not found message
+            # If no results meet the threshold, use general AI response
             if not relevant_results:
-                logger.info(f"No results found within similarity threshold {threshold}")
-                return "❌ I couldn't find any relevant documents to answer your question. Try rephrasing your question or use the `/refresh` command to update the document index."
+                logger.info(f"No results found within similarity threshold {threshold}, using general AI response")
+                return self._generate_general_response(query)
 
             # Take top 3 most relevant results for context
             relevant_results = relevant_results[:min(3, len(relevant_results))]
@@ -91,9 +98,14 @@ class QueryEngine:
             # Always generate focused response (AI or direct)
             response = self._generate_focused_response(query, relevant_results)
 
+            # If AI couldn't find info in documents, try general response
+            if "Information not found in documents" in response:
+                logger.info("Document-based response returned 'not found', using general AI response")
+                return self._generate_general_response(query)
+
             # Add source attribution only if the response contains actual information
-            if "Information not found" in response or "❌" in response:
-                # Don't add sources for "not found" responses
+            if "❌" in response:
+                # Don't add sources for error responses
                 final_response = response
             else:
                 # Only include the MOST relevant document (first one) as reference
@@ -163,6 +175,142 @@ class QueryEngine:
             total_length += len(context_entry)
 
         return "\n---\n".join(context_parts)
+
+    def _handle_special_queries(self, query: str) -> Optional[str]:
+        """Handle special queries like greetings, system info, document lists"""
+        query_lower = query.lower().strip()
+
+        # Greetings
+        greetings = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening']
+        if any(query_lower == greeting or query_lower.startswith(greeting + ' ') for greeting in greetings):
+            return "👋 Hello! I'm InfoBot, your AI assistant. I can help you find information from your documents or answer general questions. Just ask me anything!"
+
+        # Help queries
+        help_keywords = ['how can you help', 'what can you do', 'how are you helpful', 'help me', 'what do you do']
+        if any(keyword in query_lower for keyword in help_keywords):
+            stats = self.doc_processor.get_document_stats()
+            doc_count = stats.get('total_documents', 0)
+            return f"""I'm InfoBot, your intelligent assistant! Here's what I can do:
+
+📚 **Document Search**: I have access to {doc_count} documents from Google Drive and Confluence
+💬 **General Questions**: I can answer general questions on any topic
+📊 **System Commands**:
+   • `/status` - Check my current status
+   • `/refresh` - Refresh document index
+   • Ask "how many documents" or "list documents" for document info
+
+Just ask me anything - whether it's about your documents or a general question!"""
+
+        # Document count query
+        count_keywords = ['how many document', 'document count', 'number of document', 'total document']
+        if any(keyword in query_lower for keyword in count_keywords):
+            stats = self.doc_processor.get_document_stats()
+            total_docs = stats.get('total_documents', 0)
+            total_chunks = stats.get('total_chunks', 0)
+            last_updated = stats.get('last_updated', 'Never')
+            return f"📊 **Document Statistics**:\n• Total Documents: {total_docs}\n• Total Chunks: {total_chunks}\n• Last Updated: {last_updated}"
+
+        # List documents query
+        list_keywords = ['list document', 'show document', 'what document', 'all document']
+        if any(keyword in query_lower for keyword in list_keywords):
+            return self._list_all_documents()
+
+        return None
+
+    def _list_all_documents(self) -> str:
+        """List all indexed documents"""
+        try:
+            # Get all document metadata from vector store
+            results = self.doc_processor.vector_store.collection.get()
+
+            if not results or not results.get('metadatas'):
+                return "📚 No documents have been indexed yet. Use `/refresh` to index your documents."
+
+            # Extract unique documents
+            docs_by_source = {}
+            for metadata in results['metadatas']:
+                doc_name = metadata.get('doc_name', 'Unknown')
+                doc_source = metadata.get('doc_source', 'unknown')
+                doc_url = metadata.get('url', '')
+
+                if doc_source not in docs_by_source:
+                    docs_by_source[doc_source] = []
+
+                # Avoid duplicates
+                if not any(d['name'] == doc_name for d in docs_by_source[doc_source]):
+                    docs_by_source[doc_source].append({
+                        'name': doc_name,
+                        'url': doc_url
+                    })
+
+            # Format response
+            response_parts = ["📚 **Indexed Documents**:\n"]
+
+            for source, docs in docs_by_source.items():
+                response_parts.append(f"\n**{source.upper()}** ({len(docs)} documents):")
+                for doc in sorted(docs, key=lambda x: x['name'])[:20]:  # Limit to 20 per source
+                    if doc['url']:
+                        response_parts.append(f"  • [{doc['name']}]({doc['url']})")
+                    else:
+                        response_parts.append(f"  • {doc['name']}")
+
+                if len(docs) > 20:
+                    response_parts.append(f"  ... and {len(docs) - 20} more")
+
+            return '\n'.join(response_parts)
+
+        except Exception as e:
+            logger.error(f"Error listing documents: {str(e)}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            return "❌ Error retrieving document list. Please try again."
+
+    def _generate_general_response(self, query: str) -> str:
+        """Generate response for general queries without document context"""
+        try:
+            logger.info("Generating general AI response (no document context)")
+
+            # Create prompt for general knowledge
+            prompt = f"""You are InfoBot, a helpful AI assistant. Answer the user's question directly and concisely.
+
+User Question: {query}
+
+Instructions:
+1. Provide a clear, helpful answer in 2-3 sentences
+2. Be friendly and conversational
+3. If you don't have access to current information (like weather, news), politely mention that
+4. Keep the response concise and helpful
+
+Answer:"""
+
+            # Try Anthropic first, then OpenAI
+            if self.anthropic_client:
+                logger.info("Using Anthropic (Claude) for general response")
+                response = self.anthropic_client.messages.create(
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=500,
+                    temperature=0.7,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                return response.content[0].text.strip()
+            elif self.openai_client:
+                logger.info("Using OpenAI (GPT) for general response")
+                response = self.openai_client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": "You are InfoBot, a helpful AI assistant. Answer questions concisely and helpfully."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=500,
+                    temperature=0.7
+                )
+                return response.choices[0].message.content.strip()
+            else:
+                return "I'm InfoBot, but I need AI API keys configured to answer general questions. I can still search through your indexed documents if you have any!"
+
+        except Exception as e:
+            logger.error(f"Error generating general response: {str(e)}")
+            return "I'm here to help! I can search through your documents and answer questions. What would you like to know?"
 
     def _create_prompt(self, query: str, context: str) -> str:
         """Create prompt for AI model"""
