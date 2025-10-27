@@ -22,6 +22,7 @@ An AI-powered Slack bot that searches and answers questions from your Google Dri
   - [Step 3: Get Confluence Credentials](#step-3-get-confluence-credentials-optional)
   - [Step 4: Get AI API Keys](#step-4-get-ai-api-keys)
   - [Step 5: Configure Environment](#step-5-configure-environment-variables)
+- [Document Access Setup](#-document-access-setup) ⭐ **NEW**
 - [Running the Application](#-running-the-application)
   - [Local Development](#option-1-local-development)
   - [Docker](#option-2-docker)
@@ -223,6 +224,10 @@ mv ~/Downloads/your-project-xxxxxx.json credentials/google-service-account.json
 GOOGLE_SERVICE_ACCOUNT_KEY=./credentials/google-service-account.json
 ```
 
+**💡 Advanced Setup**: For automatic access to all Google Drive files (without manual sharing), see:
+- **[DOCUMENT_ACCESS_SETUP.md](./DOCUMENT_ACCESS_SETUP.md)** - Complete guide for automatic document access
+- **[GOOGLE_DRIVE_SETUP.md](./GOOGLE_DRIVE_SETUP.md)** - Domain-wide delegation setup
+
 ---
 
 ### Step 3: Get Confluence Credentials (Optional)
@@ -261,7 +266,9 @@ CONFLUENCE_API_TOKEN=ATATT3xFfGF0T...your-token-here
 CONFLUENCE_SPACES=DEV,PROD,DOCS,HR
 ```
 
-**Note**: Separate multiple space keys with commas (no spaces)
+**Note**: Separate multiple space keys with commas (no spaces). Leave empty to fetch ALL accessible spaces!
+
+**💡 Pro Tip**: See [DOCUMENT_ACCESS_SETUP.md](./DOCUMENT_ACCESS_SETUP.md) for automatic access to all documents!
 
 ---
 

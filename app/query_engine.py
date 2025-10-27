@@ -287,7 +287,7 @@ Answer:"""
             if self.anthropic_client:
                 logger.info("Using Anthropic (Claude) for general response")
                 response = self.anthropic_client.messages.create(
-                    model="claude-3-5-sonnet-20241022",
+                    model="claude-3-haiku-20240307",
                     max_tokens=500,
                     temperature=0.7,
                     messages=[{"role": "user", "content": prompt}]
@@ -336,7 +336,7 @@ Answer:"""
         """Get response from Anthropic Claude"""
         try:
             response = self.anthropic_client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+                model="claude-3-haiku-20240307",
                 max_tokens=1000,
                 temperature=0.1,
                 messages=[
@@ -523,13 +523,13 @@ Answer:"""
         if self.anthropic_client:
             try:
                 test_response = self.anthropic_client.messages.create(
-                    model="claude-3-5-haiku-20241022",
+                    model="claude-3-haiku-20240307",
                     max_tokens=50,
                     messages=[{"role": "user", "content": "Hello, respond with 'Claude is working'"}]
                 )
                 results['anthropic'] = {
                     'status': 'connected',
-                    'model': 'claude-3-5-haiku-20241022'
+                    'model': 'claude-3-haiku-20240307'
                 }
             except Exception as e:
                 results['anthropic'] = {

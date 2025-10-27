@@ -111,27 +111,31 @@ class ConfluenceHandler:
             # If specific organization spaces are configured, use those
             if self.organization_spaces:
                 logger.info(f"Processing configured organization spaces: {', '.join(self.organization_spaces)}")
-                
+
                 for space_key in self.organization_spaces:
                     try:
                         logger.info(f"Processing Confluence space: {space_key}")
                         space_documents = self._get_space_documents(space_key)
                         documents.extend(space_documents)
+                        logger.info(f"Retrieved {len(space_documents)} documents from space {space_key}")
                     except Exception as e:
                         logger.error(f"Error processing space {space_key}: {str(e)}")
                         continue
             else:
-                # Fallback: Get all accessible spaces (but warn it's not organization-specific)
-                logger.warning("No specific organization spaces configured, fetching all accessible spaces")
+                # Get all accessible spaces
+                logger.info("No specific spaces configured - fetching ALL accessible Confluence spaces")
                 spaces = self._get_spaces()
+                logger.info(f"Found {len(spaces)} accessible Confluence spaces")
 
                 for space in spaces:
                     space_key = space['key']
-                    logger.info(f"Processing Confluence space: {space_key}")
+                    space_name = space.get('name', space_key)
+                    logger.info(f"Processing Confluence space: {space_name} ({space_key})")
 
                     # Get pages from this space
                     space_documents = self._get_space_documents(space_key)
                     documents.extend(space_documents)
+                    logger.info(f"Retrieved {len(space_documents)} documents from space {space_key}")
 
             logger.info(f"Found {len(documents)} documents in Confluence")
             return documents
@@ -141,38 +145,49 @@ class ConfluenceHandler:
             return []
 
     def _get_spaces(self) -> List[Dict[str, Any]]:
-        """Get all accessible spaces"""
+        """Get all accessible spaces (global, personal, and collaboration)"""
         try:
             spaces = []
-            start = 0
-            limit = 50
 
-            while True:
-                url = f"{self.api_base_url}/rest/api/space"
-                params = {
-                    'start': start,
-                    'limit': limit,
-                    'type': 'global'
-                }
+            # Fetch different space types
+            space_types = ['global', 'personal', 'collaboration']
 
-                response = self.session.get(url, params=params)
+            for space_type in space_types:
+                start = 0
+                limit = 50
 
-                if response.status_code != 200:
-                    logger.error(f"Error fetching spaces: {response.status_code}")
-                    break
+                while True:
+                    url = f"{self.api_base_url}/rest/api/space"
+                    params = {
+                        'start': start,
+                        'limit': limit,
+                        'type': space_type
+                    }
 
-                data = response.json()
-                results = data.get('results', [])
+                    response = self.session.get(url, params=params)
 
-                spaces.extend(results)
+                    if response.status_code != 200:
+                        logger.warning(f"Error fetching {space_type} spaces: {response.status_code}")
+                        break
 
-                # Check if there are more results
-                if len(results) < limit:
-                    break
+                    data = response.json()
+                    results = data.get('results', [])
 
-                start += limit
+                    spaces.extend(results)
 
-            return spaces
+                    # Check if there are more results
+                    if len(results) < limit:
+                        break
+
+                    start += limit
+
+            # Remove duplicates based on space key
+            unique_spaces = {}
+            for space in spaces:
+                unique_spaces[space['key']] = space
+
+            logger.info(f"Found {len(unique_spaces)} unique spaces across all types")
+            return list(unique_spaces.values())
 
         except Exception as e:
             logger.error(f"Error getting Confluence spaces: {str(e)}")
