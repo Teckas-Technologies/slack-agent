@@ -50,26 +50,47 @@ class GoogleDriveHandler:
         self.service = self._initialize_drive_service()
 
     def _initialize_drive_service(self):
-        """Initialize Google Drive service"""
+        """Initialize Google Drive service with optional domain-wide delegation"""
         try:
             service_account_key = os.environ.get('GOOGLE_SERVICE_ACCOUNT_KEY', '')
+            delegated_user = os.environ.get('GOOGLE_DRIVE_DELEGATED_USER', '')
 
             # Method 1: Try JSON content directly from environment variable
             if service_account_key and service_account_key.strip().startswith('{'):
                 # Service account key is JSON content
                 logger.info("Using service account credentials from environment variable (JSON content)")
                 service_account_info = json.loads(service_account_key)
-                credentials = ServiceAccountCredentials.from_service_account_info(
-                    service_account_info,
-                    scopes=['https://www.googleapis.com/auth/drive.readonly']
-                )
+
+                if delegated_user:
+                    logger.info(f"Using domain-wide delegation with user: {delegated_user}")
+                    credentials = ServiceAccountCredentials.from_service_account_info(
+                        service_account_info,
+                        scopes=['https://www.googleapis.com/auth/drive.readonly'],
+                        subject=delegated_user
+                    )
+                else:
+                    logger.info("Using service account without delegation (requires shared files)")
+                    credentials = ServiceAccountCredentials.from_service_account_info(
+                        service_account_info,
+                        scopes=['https://www.googleapis.com/auth/drive.readonly']
+                    )
             # Method 2: Try file path
             elif service_account_key and os.path.exists(service_account_key):
                 logger.info("Using service account credentials from file path")
-                credentials = ServiceAccountCredentials.from_service_account_file(
-                    service_account_key,
-                    scopes=['https://www.googleapis.com/auth/drive.readonly']
-                )
+
+                if delegated_user:
+                    logger.info(f"Using domain-wide delegation with user: {delegated_user}")
+                    credentials = ServiceAccountCredentials.from_service_account_file(
+                        service_account_key,
+                        scopes=['https://www.googleapis.com/auth/drive.readonly'],
+                        subject=delegated_user
+                    )
+                else:
+                    logger.info("Using service account without delegation (requires shared files)")
+                    credentials = ServiceAccountCredentials.from_service_account_file(
+                        service_account_key,
+                        scopes=['https://www.googleapis.com/auth/drive.readonly']
+                    )
             # Method 3: OAuth2 credentials (for development)
             else:
                 creds_path = os.environ.get('GOOGLE_CREDENTIALS_PATH', 'credentials.json')

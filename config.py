@@ -15,7 +15,8 @@ class Config:
     
     # Google Drive Configuration
     GOOGLE_SERVICE_ACCOUNT_KEY = os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY")
-    
+    GOOGLE_DRIVE_DELEGATED_USER = os.getenv("GOOGLE_DRIVE_DELEGATED_USER")  # For domain-wide delegation
+
     # Confluence Configuration
     CONFLUENCE_BASE_URL = os.getenv("CONFLUENCE_BASE_URL")
     CONFLUENCE_USERNAME = os.getenv("CONFLUENCE_USERNAME")
