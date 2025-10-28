@@ -623,13 +623,6 @@ For issues:
 4. ✅ Verify `.env` file has all required variables
 5. ✅ Test individual components
 
----
-
-## 📝 License
-
-This project is licensed under the MIT License.
-
----
 
 **Built with ❤️ using FastAPI, ChromaDB, Claude AI, and OpenAI**
 
