@@ -16,6 +16,14 @@ from app.query_engine import QueryEngine
 from app.google_drive_handler import GoogleDriveHandler
 from app.confluence_handler import ConfluenceHandler
 from datetime import datetime
+
+# VertexAI RAG support
+try:
+    from app.drive_sync_service import DriveSyncService
+    VERTEX_RAG_AVAILABLE = True
+except ImportError:
+    VERTEX_RAG_AVAILABLE = False
+    logger.warning("VertexAI RAG not available - make sure google-cloud-aiplatform is installed")
 import json
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -98,10 +106,32 @@ class SlackDocumentAgent:
 
         # Initialize document handlers
         self.gdrive_handler = GoogleDriveHandler()
-        self.confluence_handler = ConfluenceHandler()
+        self.confluence_handler = ConfluenceHandler() if not Config.USE_VERTEX_AI_RAG else None
 
-        # Initialize document processor and query engine
-        self.doc_processor = DocumentProcessor()
+        # Initialize VertexAI RAG or ChromaDB depending on configuration
+        self.use_vertex_rag = Config.USE_VERTEX_AI_RAG and VERTEX_RAG_AVAILABLE
+        self.vertex_sync_service = None
+
+        if self.use_vertex_rag:
+            logger.info("Initializing VertexAI RAG mode (Google Drive only)")
+            try:
+                self.vertex_sync_service = DriveSyncService()
+                if not self.vertex_sync_service.is_configured():
+                    logger.error("VertexAI RAG not properly configured, falling back to ChromaDB")
+                    self.use_vertex_rag = False
+                    self.doc_processor = DocumentProcessor()
+                else:
+                    logger.info("VertexAI RAG initialized successfully")
+                    self.doc_processor = None  # Not needed with VertexAI RAG
+            except Exception as e:
+                logger.error(f"Failed to initialize VertexAI RAG: {str(e)}, falling back to ChromaDB")
+                self.use_vertex_rag = False
+                self.doc_processor = DocumentProcessor()
+        else:
+            logger.info("Using ChromaDB mode (Google Drive + Confluence)")
+            self.doc_processor = DocumentProcessor()
+
+        # Initialize query engine (handles both modes internally)
         self.query_engine = QueryEngine()
 
         # Track processing status and last sync
@@ -230,6 +260,31 @@ class SlackDocumentAgent:
         try:
             loop = asyncio.get_event_loop()
 
+            # Use VertexAI RAG sync if enabled
+            if self.use_vertex_rag and self.vertex_sync_service:
+                logger.info("Running VertexAI RAG sync (Google Drive only)")
+
+                # Sync all documents to VertexAI RAG
+                result = await loop.run_in_executor(
+                    None,
+                    self.vertex_sync_service.sync_all_documents,
+                    True  # force=True for manual refresh
+                )
+
+                if result['status'] == 'success':
+                    message = f"✅ Refresh complete! Synced {result['documents_synced']} documents to VertexAI RAG."
+                else:
+                    message = f"❌ Sync failed: {result.get('message', 'Unknown error')}"
+
+                if channel_id:
+                    self.slack_client.chat_postMessage(
+                        channel=channel_id,
+                        thread_ts=thread_ts,
+                        text=message
+                    )
+                return
+
+            # Legacy ChromaDB mode
             # Refresh Google Drive documents
             gdrive_docs = await loop.run_in_executor(None, self.gdrive_handler.get_all_documents)
 
@@ -251,7 +306,7 @@ class SlackDocumentAgent:
                         logger.error(f"Failed to process document: {doc.get('name', 'Unknown')}")
 
                     # Send progress update every 10 documents
-                    if processed % 10 == 0:
+                    if channel_id and processed % 10 == 0:
                         self.slack_client.chat_postMessage(
                             channel=channel_id,
                             thread_ts=thread_ts,
@@ -263,19 +318,21 @@ class SlackDocumentAgent:
                     continue
 
             # Send completion message
-            self.slack_client.chat_postMessage(
-                channel=channel_id,
-                thread_ts=thread_ts,
-                text=f"✅ Refresh complete! Processed {processed} documents."
-            )
+            if channel_id:
+                self.slack_client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=thread_ts,
+                    text=f"✅ Refresh complete! Processed {processed} documents."
+                )
 
         except Exception as e:
             logger.error(f"Error in background refresh: {str(e)}")
-            self.slack_client.chat_postMessage(
-                channel=channel_id,
-                thread_ts=thread_ts,
-                text="❌ Document refresh failed. Please check the logs."
-            )
+            if channel_id:
+                self.slack_client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=thread_ts,
+                    text="❌ Document refresh failed. Please check the logs."
+                )
 
     async def _send_error_message(self, channel_id: str, thread_ts: str = None) -> None:
         """Send generic error message"""
@@ -298,6 +355,25 @@ class SlackDocumentAgent:
 
             loop = asyncio.get_event_loop()
 
+            # Use VertexAI RAG sync if enabled
+            if self.use_vertex_rag and self.vertex_sync_service:
+                logger.info("Running scheduled VertexAI RAG sync (Google Drive only)")
+
+                result = await loop.run_in_executor(
+                    None,
+                    self.vertex_sync_service.sync_all_documents,
+                    False  # force=False for scheduled sync (only new docs)
+                )
+
+                if result['status'] == 'success':
+                    logger.info(f"VertexAI RAG sync completed: {result['documents_synced']} documents synced")
+                else:
+                    logger.error(f"VertexAI RAG sync failed: {result.get('message')}")
+
+                self.last_sync_time = datetime.now()
+                return
+
+            # Legacy ChromaDB mode
             # Fetch documents from all sources
             gdrive_docs = await loop.run_in_executor(None, self.gdrive_handler.get_all_documents)
             confluence_docs = await loop.run_in_executor(None, self.confluence_handler.get_all_documents)

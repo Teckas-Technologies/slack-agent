@@ -18,22 +18,42 @@ class QueryEngine:
         # Initialize AI clients
         self.openai_client = None
         self.anthropic_client = None
-        
+
         # Initialize OpenAI if API key is available
         if Config.OPENAI_API_KEY:
             self.openai_client = openai.OpenAI(api_key=Config.OPENAI_API_KEY)
-        
+
         # Initialize Anthropic if API key is available
         if Config.ANTHROPIC_API_KEY:
             self.anthropic_client = anthropic.Anthropic(api_key=Config.ANTHROPIC_API_KEY)
-        
-        # Document processor for search
-        self.doc_processor = DocumentProcessor()
-        
+
+        # Check if we should use VertexAI RAG
+        self.use_vertex_rag = Config.USE_VERTEX_AI_RAG
+        self.vertex_sync_service = None
+
+        if self.use_vertex_rag:
+            try:
+                from .drive_sync_service import DriveSyncService
+                self.vertex_sync_service = DriveSyncService()
+                if self.vertex_sync_service.is_configured():
+                    logger.info("Using VertexAI RAG for document search")
+                else:
+                    logger.warning("VertexAI RAG not configured, falling back to ChromaDB")
+                    self.use_vertex_rag = False
+                    self.doc_processor = DocumentProcessor()
+            except Exception as e:
+                logger.error(f"Failed to initialize VertexAI RAG: {str(e)}, falling back to ChromaDB")
+                self.use_vertex_rag = False
+                self.doc_processor = DocumentProcessor()
+        else:
+            # Document processor for ChromaDB search (legacy)
+            self.doc_processor = DocumentProcessor()
+            logger.info("Using ChromaDB for document search")
+
         # Configuration - Adjust for better search performance
         self.max_context_length = 4000
         self.max_search_results = 5  # Reduce to get more focused results
-        self.similarity_threshold = 0.8  # Threshold for OpenAI embeddings
+        self.similarity_threshold = 0.5  # Threshold for VertexAI RAG
         self.simple_similarity_threshold = 500.0  # Higher threshold for simple embeddings
 
     def process_query(self, query: str) -> str:
@@ -46,7 +66,11 @@ class QueryEngine:
             if special_response:
                 return special_response
 
-            # Search for relevant documents
+            # Use VertexAI RAG if enabled, otherwise use ChromaDB
+            if self.use_vertex_rag and self.vertex_sync_service:
+                return self._process_query_with_vertex_rag(query)
+
+            # Legacy ChromaDB search
             search_results = self.doc_processor.search_documents(
                 query=query,
                 num_results=self.max_search_results
@@ -122,6 +146,53 @@ class QueryEngine:
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}")
             return "❌ Sorry, I encountered an error processing your query. Please try again or contact support."
+
+    def _process_query_with_vertex_rag(self, query: str) -> str:
+        """Process query using VertexAI RAG"""
+        try:
+            logger.info("Processing query with VertexAI RAG")
+
+            # Use VertexAI RAG with Gemini to generate answer
+            result = self.vertex_sync_service.generate_answer(
+                query_text=query,
+                model_name="gemini-2.0-flash-001"
+            )
+
+            if 'error' in result:
+                logger.error(f"VertexAI RAG error: {result['error']}")
+                # Fallback to general response
+                return self._generate_general_response(query)
+
+            answer = result.get('answer', '')
+            sources = result.get('sources', [])
+
+            # Check if answer indicates no information found
+            if not answer or "cannot find" in answer.lower() or "no information" in answer.lower():
+                logger.info("VertexAI RAG returned no information, using general AI response")
+                return self._generate_general_response(query)
+
+            # Format response with sources
+            if sources:
+                # Format source links (they are already Drive URLs)
+                source_links = []
+                for i, source_url in enumerate(sources[:3], 1):  # Limit to 3 sources
+                    # Extract file name from URL if possible
+                    file_name = source_url.split('/')[-1] if '/' in source_url else f"Document {i}"
+                    source_links.append(f"[{file_name}]({source_url})")
+
+                sources_text = "\n\nHere are the references: " + ", ".join(source_links)
+                final_response = f"{answer}{sources_text}"
+            else:
+                final_response = answer
+
+            return final_response
+
+        except Exception as e:
+            logger.error(f"Error in VertexAI RAG query processing: {str(e)}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            # Fallback to general response
+            return self._generate_general_response(query)
 
     def _generate_ai_response(self, query: str, search_results: List[Dict[str, Any]]) -> str:
         """Generate AI response based on search results"""

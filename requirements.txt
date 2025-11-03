@@ -11,6 +11,9 @@ slack-bolt==1.18.1
 anthropic>=0.25.0
 openai>=1.8.0
 
+# Google Cloud AI - VertexAI RAG
+google-cloud-aiplatform>=1.38.0
+
 # Google APIs
 google-api-python-client==2.114.0
 google-auth==2.25.2

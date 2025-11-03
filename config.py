@@ -17,7 +17,25 @@ class Config:
     GOOGLE_SERVICE_ACCOUNT_KEY = os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY")
     GOOGLE_DRIVE_DELEGATED_USER = os.getenv("GOOGLE_DRIVE_DELEGATED_USER")  # For domain-wide delegation
 
-    # Confluence Configuration
+    # Google Cloud VertexAI Configuration
+    GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID")
+    GCP_LOCATION = os.getenv("GCP_LOCATION", "europe-west1")  # Default to europe-west1
+    VERTEX_RAG_CORPUS_NAME = os.getenv("VERTEX_RAG_CORPUS_NAME", "google_drive_documents")
+
+    # RAG Configuration
+    USE_VERTEX_AI_RAG = os.getenv("USE_VERTEX_AI_RAG", "true").lower() == "true"  # Default to VertexAI RAG
+
+    # VertexAI RAG Import Mode
+    # Option 1: Specific folders (RECOMMENDED - auto-detects new files in these folders)
+    # Provide comma-separated list of Google Drive folder IDs
+    GOOGLE_DRIVE_FOLDER_IDS = os.getenv("GOOGLE_DRIVE_FOLDER_IDS", "")  # e.g., "abc123,def456"
+
+    # Option 2: Full Drive access (if GOOGLE_DRIVE_FOLDER_IDS is empty)
+    # Set to "true" to import ALL accessible Drive files
+    # Note: This mode requires periodic sync to discover new files
+    VERTEX_RAG_FULL_DRIVE = os.getenv("VERTEX_RAG_FULL_DRIVE", "false").lower() == "true"
+
+    # Confluence Configuration (legacy - can be removed if not needed)
     CONFLUENCE_BASE_URL = os.getenv("CONFLUENCE_BASE_URL")
     CONFLUENCE_USERNAME = os.getenv("CONFLUENCE_USERNAME")
     CONFLUENCE_API_TOKEN = os.getenv("CONFLUENCE_API_TOKEN")
