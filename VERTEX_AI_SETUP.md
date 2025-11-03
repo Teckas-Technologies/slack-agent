@@ -20,16 +20,22 @@ The original ChromaDB implementation works well for small to medium document set
 
 ## Step 1: Enable VertexAI API
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Select or create your project
-3. Navigate to **APIs & Services > Library**
-4. Search for **"Vertex AI API"**
-5. Click **Enable**
+1. **Open Google Cloud Console**: [https://console.cloud.google.com/](https://console.cloud.google.com/)
 
-Alternatively, use gcloud CLI:
-```bash
-gcloud services enable aiplatform.googleapis.com --project=YOUR_PROJECT_ID
-```
+2. **Select your project** from the dropdown at the top of the page
+   - Or create a new project if needed: [Create Project](https://console.cloud.google.com/projectcreate)
+
+3. **Enable Vertex AI API**:
+   - Direct link: [Enable Vertex AI API](https://console.cloud.google.com/apis/library/aiplatform.googleapis.com)
+   - Or manually:
+     - Navigate to **APIs & Services > Library**
+     - Search for **"Vertex AI API"**
+     - Click on the result
+     - Click **Enable** button
+
+4. **Verify it's enabled**:
+   - Go to [Enabled APIs](https://console.cloud.google.com/apis/dashboard)
+   - You should see "Vertex AI API" in the list
 
 ## Step 2: Set Up Service Account Permissions
 
@@ -42,10 +48,21 @@ The service account name follows this format:
 service-{PROJECT_NUMBER}@gcp-sa-vertex-rag.iam.gserviceaccount.com
 ```
 
-To find your PROJECT_NUMBER:
-```bash
-gcloud projects describe YOUR_PROJECT_ID --format="value(projectNumber)"
-```
+**To find your PROJECT_NUMBER:**
+
+1. Go to [Google Cloud Console Dashboard](https://console.cloud.google.com/home/dashboard)
+2. Select your project from the dropdown
+3. Look at the **Project info** card on the dashboard
+4. You'll see:
+   ```
+   Project name: your-project-name
+   Project ID: your-project-id
+   Project number: 123456789012  ← This is what you need
+   ```
+5. Your VertexAI RAG service account will be:
+   ```
+   service-123456789012@gcp-sa-vertex-rag.iam.gserviceaccount.com
+   ```
 
 ### Grant Drive Access
 
@@ -77,12 +94,35 @@ Your application needs credentials to interact with VertexAI. Use your existing 
 
 ### Grant Required Roles to Your Service Account
 
-```bash
-# Grant Vertex AI User role
-gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
-  --member="serviceAccount:YOUR_SERVICE_ACCOUNT_EMAIL" \
-  --role="roles/aiplatform.user"
-```
+1. **Go to IAM & Admin**:
+   - Direct link: [IAM Permissions](https://console.cloud.google.com/iam-admin/iam)
+   - Or navigate: **IAM & Admin > IAM**
+
+2. **Find your service account** in the list
+   - Look for: `your-service-account@your-project.iam.gserviceaccount.com`
+   - This is the service account you're using for Google Drive access
+
+3. **Click the pencil icon** (Edit) next to your service account
+
+4. **Add Role**:
+   - Click **+ ADD ANOTHER ROLE**
+   - Search for: **Vertex AI User**
+   - Select: **Vertex AI > Vertex AI User**
+   - Click **Save**
+
+5. **Verify the role is added**:
+   - Your service account should now have both:
+     - Any existing roles (e.g., for Drive access)
+     - **Vertex AI User** (new)
+
+**Alternative method - Grant via Service Accounts page:**
+1. Go to [Service Accounts](https://console.cloud.google.com/iam-admin/serviceaccounts)
+2. Click on your service account email
+3. Go to **Permissions** tab
+4. Click **GRANT ACCESS**
+5. Enter your service account email in "Add principals"
+6. Select role: **Vertex AI User**
+7. Click **Save**
 
 ## Step 4: Update Environment Variables
 
@@ -156,21 +196,56 @@ pip install -r requirements.txt
 
 The `google-cloud-aiplatform>=1.38.0` package will be installed automatically.
 
-## Step 6: Authenticate with Google Cloud
+## Step 6: Set Up Service Account Key
 
-### For Local Development
+Your application authenticates using a service account JSON key file.
 
-```bash
-# Authenticate with your Google account
-gcloud auth application-default login
+### Create or Use Existing Service Account Key
 
-# Set your project
-gcloud config set project YOUR_PROJECT_ID
-```
+**If you already have a service account key** (from Google Drive setup):
+- Use the same key - just ensure you added the "Vertex AI User" role in Step 3
+- Skip to Step 7
 
-### For Production/Deployment
+**If you need to create a new service account:**
 
-Ensure your service account JSON key is properly set in the `GOOGLE_SERVICE_ACCOUNT_KEY` environment variable. The application will use this for authentication.
+1. **Go to Service Accounts page**:
+   - Direct link: [Service Accounts](https://console.cloud.google.com/iam-admin/serviceaccounts)
+
+2. **Create Service Account** (if needed):
+   - Click **+ CREATE SERVICE ACCOUNT**
+   - Service account name: `slack-agent-sa` (or your preferred name)
+   - Click **CREATE AND CONTINUE**
+
+3. **Grant Roles**:
+   - Add role: **Vertex AI User**
+   - Add role: **Drive Reader** (if accessing Drive)
+   - Click **CONTINUE**
+   - Click **DONE**
+
+4. **Create JSON Key**:
+   - Click on your service account email in the list
+   - Go to **KEYS** tab
+   - Click **ADD KEY > Create new key**
+   - Select **JSON**
+   - Click **CREATE**
+   - The JSON key file will download automatically
+
+5. **Configure the application**:
+
+   **Option A: Use JSON content directly** (recommended for deployment)
+   ```bash
+   # In your .env file, paste the entire JSON content
+   GOOGLE_SERVICE_ACCOUNT_KEY='{"type":"service_account","project_id":"your-project",...}'
+   ```
+
+   **Option B: Use file path** (for local development)
+   ```bash
+   # Save the downloaded JSON file to a secure location
+   # In your .env file, reference the path
+   GOOGLE_SERVICE_ACCOUNT_KEY=/path/to/service-account-key.json
+   ```
+
+**Security Note**: Keep the JSON key file secure and never commit it to version control!
 
 ## Step 7: Initial Sync
 
@@ -287,10 +362,10 @@ INFO - Using VertexAI RAG for document search
 
 **Solution**: Ensure `GCP_PROJECT_ID` is set in your `.env` file and the VertexAI API is enabled.
 
-```bash
-# Check if API is enabled
-gcloud services list --enabled --filter="name:aiplatform.googleapis.com"
-```
+**Check if API is enabled:**
+1. Go to [Enabled APIs](https://console.cloud.google.com/apis/dashboard)
+2. Search for "Vertex AI API"
+3. If not found, go back to Step 1 to enable it
 
 ### Error: "Permission denied" when syncing documents
 
@@ -304,13 +379,12 @@ gcloud services list --enabled --filter="name:aiplatform.googleapis.com"
 
 ### Error: "Could not authenticate"
 
-**Solution**: Ensure your application's service account has the `roles/aiplatform.user` role:
+**Solution**: Ensure your application's service account has the `Vertex AI User` role:
 
-```bash
-gcloud projects get-iam-policy YOUR_PROJECT_ID \
-  --flatten="bindings[].members" \
-  --filter="bindings.members:YOUR_SERVICE_ACCOUNT_EMAIL"
-```
+1. Go to [IAM Permissions](https://console.cloud.google.com/iam-admin/iam)
+2. Find your service account in the list
+3. Check the "Role" column - you should see **Vertex AI User**
+4. If missing, click the pencil icon to edit and add the role (see Step 3)
 
 ### Slow Initial Sync
 
@@ -388,9 +462,20 @@ If you're migrating from the ChromaDB implementation:
 
 ## Support and Resources
 
-- [VertexAI RAG Documentation](https://cloud.google.com/vertex-ai/generative-ai/docs/rag-engine/rag-overview)
+### Google Cloud Console Links
+
+- **Project Dashboard**: [https://console.cloud.google.com/home/dashboard](https://console.cloud.google.com/home/dashboard)
+- **Enable Vertex AI API**: [https://console.cloud.google.com/apis/library/aiplatform.googleapis.com](https://console.cloud.google.com/apis/library/aiplatform.googleapis.com)
+- **IAM & Admin**: [https://console.cloud.google.com/iam-admin/iam](https://console.cloud.google.com/iam-admin/iam)
+- **Service Accounts**: [https://console.cloud.google.com/iam-admin/serviceaccounts](https://console.cloud.google.com/iam-admin/serviceaccounts)
+- **Enabled APIs**: [https://console.cloud.google.com/apis/dashboard](https://console.cloud.google.com/apis/dashboard)
+
+### Documentation
+
+- [VertexAI RAG Overview](https://cloud.google.com/vertex-ai/generative-ai/docs/rag-engine/rag-overview)
+- [VertexAI RAG Quickstart](https://cloud.google.com/vertex-ai/generative-ai/docs/rag-engine/rag-quickstart)
 - [Google Drive API Setup](https://developers.google.com/drive/api/guides/enable-sdk)
-- [Issue Tracker](https://github.com/your-repo/issues)
+- [Service Account Keys](https://cloud.google.com/iam/docs/keys-create-delete)
 
 ## Next Steps
 
