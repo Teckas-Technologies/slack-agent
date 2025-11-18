@@ -17,13 +17,6 @@ from app.google_drive_handler import GoogleDriveHandler
 from app.confluence_handler import ConfluenceHandler
 from datetime import datetime
 
-# VertexAI RAG support
-try:
-    from app.drive_sync_service import DriveSyncService
-    VERTEX_RAG_AVAILABLE = True
-except ImportError:
-    VERTEX_RAG_AVAILABLE = False
-    logger.warning("VertexAI RAG not available - make sure google-cloud-aiplatform is installed")
 import json
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -106,33 +99,15 @@ class SlackDocumentAgent:
 
         # Initialize document handlers
         self.gdrive_handler = GoogleDriveHandler()
-        self.confluence_handler = ConfluenceHandler() if not Config.USE_VERTEX_AI_RAG else None
+        self.confluence_handler = ConfluenceHandler()
 
-        # Initialize VertexAI RAG or ChromaDB depending on configuration
-        self.use_vertex_rag = Config.USE_VERTEX_AI_RAG and VERTEX_RAG_AVAILABLE
-        self.vertex_sync_service = None
+        # Initialize document processor (ChromaDB vector store)
+        logger.info("Initializing ChromaDB + Gemini AI mode (Google Drive + Confluence)")
+        self.doc_processor = DocumentProcessor()
 
-        if self.use_vertex_rag:
-            logger.info("Initializing VertexAI RAG mode (Google Drive only)")
-            try:
-                self.vertex_sync_service = DriveSyncService()
-                if not self.vertex_sync_service.is_configured():
-                    logger.error("VertexAI RAG not properly configured, falling back to ChromaDB")
-                    self.use_vertex_rag = False
-                    self.doc_processor = DocumentProcessor()
-                else:
-                    logger.info("VertexAI RAG initialized successfully")
-                    self.doc_processor = None  # Not needed with VertexAI RAG
-            except Exception as e:
-                logger.error(f"Failed to initialize VertexAI RAG: {str(e)}, falling back to ChromaDB")
-                self.use_vertex_rag = False
-                self.doc_processor = DocumentProcessor()
-        else:
-            logger.info("Using ChromaDB mode (Google Drive + Confluence)")
-            self.doc_processor = DocumentProcessor()
-
-        # Initialize query engine (handles both modes internally)
+        # Initialize query engine (Gemini AI with ChromaDB RAG)
         self.query_engine = QueryEngine()
+        logger.info("✅ Gemini AI + ChromaDB initialized successfully")
 
         # Track processing status and last sync
         self.processing_status = {}
@@ -260,69 +235,45 @@ class SlackDocumentAgent:
         try:
             loop = asyncio.get_event_loop()
 
-            # Use VertexAI RAG sync if enabled
-            if self.use_vertex_rag and self.vertex_sync_service:
-                logger.info("Running VertexAI RAG sync (Google Drive only)")
+            logger.info("Starting document refresh (Google Drive + Confluence)")
 
-                # Sync all documents to VertexAI RAG
-                result = await loop.run_in_executor(
-                    None,
-                    self.vertex_sync_service.sync_all_documents,
-                    True  # force=True for manual refresh
-                )
+            # Fetch all documents from sources
+            all_docs = []
 
-                if result['status'] == 'success':
-                    message = f"✅ Refresh complete! Synced {result['documents_synced']} documents to VertexAI RAG."
-                else:
-                    message = f"❌ Sync failed: {result.get('message', 'Unknown error')}"
+            # Get Google Drive documents
+            try:
+                gdrive_docs = await loop.run_in_executor(None, self.gdrive_handler.get_all_documents)
+                all_docs.extend(gdrive_docs)
+                logger.info(f"Fetched {len(gdrive_docs)} documents from Google Drive")
+            except Exception as e:
+                logger.error(f"Error fetching Google Drive documents: {str(e)}")
 
-                if channel_id:
-                    self.slack_client.chat_postMessage(
-                        channel=channel_id,
-                        thread_ts=thread_ts,
-                        text=message
-                    )
-                return
+            # Get Confluence documents
+            try:
+                confluence_docs = await loop.run_in_executor(None, self.confluence_handler.get_all_pages)
+                all_docs.extend(confluence_docs)
+                logger.info(f"Fetched {len(confluence_docs)} pages from Confluence")
+            except Exception as e:
+                logger.error(f"Error fetching Confluence pages: {str(e)}")
 
-            # Legacy ChromaDB mode
-            # Refresh Google Drive documents
-            gdrive_docs = await loop.run_in_executor(None, self.gdrive_handler.get_all_documents)
-
-            # Refresh Confluence documents
-            confluence_docs = await loop.run_in_executor(None, self.confluence_handler.get_all_documents)
-
-            # Process all documents
-            all_docs = gdrive_docs + confluence_docs
-            processed = 0
-
+            # Process documents
+            processed_count = 0
             for doc in all_docs:
                 try:
-                    # Use the same document processor instance as the query engine
                     result = await loop.run_in_executor(None, self.doc_processor.process_document, doc)
                     if result:
-                        processed += 1
-                        logger.info(f"Successfully processed document: {doc.get('name', 'Unknown')}")
-                    else:
-                        logger.error(f"Failed to process document: {doc.get('name', 'Unknown')}")
-
-                    # Send progress update every 10 documents
-                    if channel_id and processed % 10 == 0:
-                        self.slack_client.chat_postMessage(
-                            channel=channel_id,
-                            thread_ts=thread_ts,
-                            text=f"📈 Processed {processed}/{len(all_docs)} documents..."
-                        )
-
+                        processed_count += 1
                 except Exception as e:
                     logger.error(f"Error processing document {doc.get('name', 'Unknown')}: {str(e)}")
-                    continue
 
-            # Send completion message
+            self.last_sync_time = datetime.now()
+            message = f"✅ Refresh complete! Processed {processed_count} documents from Google Drive and Confluence."
+
             if channel_id:
                 self.slack_client.chat_postMessage(
                     channel=channel_id,
                     thread_ts=thread_ts,
-                    text=f"✅ Refresh complete! Processed {processed} documents."
+                    text=message
                 )
 
         except Exception as e:
@@ -351,35 +302,26 @@ class SlackDocumentAgent:
                 return
 
             self.sync_in_progress = True
-            logger.info("Starting scheduled document synchronization...")
+            logger.info("Starting scheduled document synchronization (Google Drive + Confluence)...")
 
             loop = asyncio.get_event_loop()
 
-            # Use VertexAI RAG sync if enabled
-            if self.use_vertex_rag and self.vertex_sync_service:
-                logger.info("Running scheduled VertexAI RAG sync (Google Drive only)")
+            # Fetch all documents from sources
+            all_docs = []
 
-                result = await loop.run_in_executor(
-                    None,
-                    self.vertex_sync_service.sync_all_documents,
-                    False  # force=False for scheduled sync (only new docs)
-                )
+            # Get Google Drive documents
+            try:
+                gdrive_docs = await loop.run_in_executor(None, self.gdrive_handler.get_all_documents)
+                all_docs.extend(gdrive_docs)
+            except Exception as e:
+                logger.error(f"Error fetching Google Drive documents: {str(e)}")
 
-                if result['status'] == 'success':
-                    logger.info(f"VertexAI RAG sync completed: {result['documents_synced']} documents synced")
-                else:
-                    logger.error(f"VertexAI RAG sync failed: {result.get('message')}")
-
-                self.last_sync_time = datetime.now()
-                return
-
-            # Legacy ChromaDB mode
-            # Fetch documents from all sources
-            gdrive_docs = await loop.run_in_executor(None, self.gdrive_handler.get_all_documents)
-            confluence_docs = await loop.run_in_executor(None, self.confluence_handler.get_all_documents)
-
-            all_docs = gdrive_docs + confluence_docs
-            logger.info(f"Found {len(all_docs)} total documents ({len(gdrive_docs)} from Drive, {len(confluence_docs)} from Confluence)")
+            # Get Confluence documents
+            try:
+                confluence_docs = await loop.run_in_executor(None, self.confluence_handler.get_all_pages)
+                all_docs.extend(confluence_docs)
+            except Exception as e:
+                logger.error(f"Error fetching Confluence pages: {str(e)}")
 
             # Process only new or modified documents
             new_or_modified = 0
@@ -427,9 +369,11 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
         # Get request body
         body = await request.body()
 
-        # Verify request signature
-        if not agent.verify_request(body, dict(request.headers)):
-            raise HTTPException(status_code=403, detail="Invalid signature")
+        # Verify request signature (optional - can be disabled for testing)
+        if Config.SLACK_VERIFY_SIGNATURE:
+            if not agent.verify_request(body, dict(request.headers)):
+                logger.warning("Invalid Slack signature")
+                raise HTTPException(status_code=403, detail="Invalid signature")
 
         data = json.loads(body.decode('utf-8'))
 
@@ -504,9 +448,11 @@ async def slack_slash_commands(request: Request, background_tasks: BackgroundTas
         # Get request body
         body = await request.body()
 
-        # Verify request signature
-        if not agent.verify_request(body, dict(request.headers)):
-            raise HTTPException(status_code=403, detail="Invalid signature")
+        # Verify request signature (optional - can be disabled for testing)
+        if Config.SLACK_VERIFY_SIGNATURE:
+            if not agent.verify_request(body, dict(request.headers)):
+                logger.warning("Invalid Slack signature")
+                raise HTTPException(status_code=403, detail="Invalid signature")
 
         # Parse form data
         from urllib.parse import parse_qs

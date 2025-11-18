@@ -1,629 +1,518 @@
-# 🤖 InfoBot - Intelligent Slack Document Assistant
-
-An AI-powered Slack bot that searches and answers questions from your Google Drive documents and Confluence pages using advanced AI models (Claude/GPT).
-
-## ✨ Features
-
-- 🔍 **Intelligent Document Search**: Semantic search across Google Drive and Confluence
-- 🤖 **AI-Powered Responses**: Accurate answers using Claude (Anthropic) or GPT (OpenAI)
-- 💬 **General Q&A**: Handles both document-specific AND general questions
-- 📄 **Multi-Format Support**: PDFs, Word docs, Google Docs, spreadsheets, presentations, Confluence pages
-- 🔄 **Auto-Sync**: Scheduled document refresh every 2 minutes
-- 📊 **Source Attribution**: See which documents answers came from
-- ⚡ **High Performance**: Built with FastAPI for superior performance
-- 🎯 **Smart Query Routing**: Automatically uses documents when relevant, general AI when not
-- 🌐 **Domain-Wide Access**: Supports Google Workspace domain-wide delegation for automatic access to all files
-- 🔐 **Automatic Discovery**: Fetches all accessible Confluence spaces automatically
-
-## 📋 Table of Contents
-
-1. [Prerequisites](#prerequisites)
-2. [Setup Guide](#-setup-guide)
-   - [Step 1: Slack App](#step-1-create-slack-app)
-   - [Step 2: Google Drive](#step-2-google-drive-setup)
-   - [Step 3: Confluence](#step-3-confluence-setup)
-   - [Step 4: AI API Keys](#step-4-ai-api-keys)
-   - [Step 5: Environment Variables](#step-5-environment-variables)
-3. [Deployment](#-deployment)
-   - [Local Development](#local-development)
-   - [Docker](#docker-deployment)
-4. [Usage](#-usage)
-5. [Troubleshooting](#-troubleshooting)
-
----
-
-## Prerequisites
-
-- Python 3.11+
-- Slack workspace with admin access
-- Google Workspace account (for Google Drive)
-- Confluence account (optional)
-- OpenAI or Anthropic API key
-
----
-
-## 🚀 Setup Guide
-
-### Step 1: Create Slack App
-
-#### 1.1 Create New App
-
-1. Go to https://api.slack.com/apps
-2. Click **"Create New App"** → **"From scratch"**
-3. Name: `InfoBot`
-4. Select your workspace
-5. Click **"Create App"**
-
-#### 1.2 Configure Bot Scopes
-
-1. Go to **"OAuth & Permissions"**
-2. Under **"Bot Token Scopes"**, add:
-   - `app_mentions:read`
-   - `chat:write`
-   - `im:history`
-   - `im:read`
-   - `channels:history` (optional)
-   - `users:read`
-
-#### 1.3 Enable Event Subscriptions
-
-1. Go to **"Event Subscriptions"**
-2. Toggle **"Enable Events"** to **ON**
-3. **Request URL**: `https://your-server-url/slack/events`
-   - For local testing with ngrok: `https://your-ngrok-url.ngrok.io/slack/events`
-4. Under **"Subscribe to bot events"**, add:
-   - `app_mention`
-   - `message.im`
-5. Click **"Save Changes"**
-
-#### 1.4 Install App
-
-1. Go to **"Install App"**
-2. Click **"Install to Workspace"**
-3. Copy the **Bot User OAuth Token** (starts with `xoxb-`)
-
-#### 1.5 Get Signing Secret
-
-1. Go to **"Basic Information"**
-2. Find **"Signing Secret"**
-3. Copy the secret
-
----
-
-### Step 2: Google Drive Setup
-
-You have two options: **Domain-Wide Delegation** (recommended for organizations) or **Manual Sharing**.
-
-#### Option A: Domain-Wide Delegation (Recommended for Google Workspace)
-
-**Access ALL files in your organization automatically!**
-
-##### 2A.1 Create Service Account
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select existing
-3. Enable **Google Drive API**:
-   - Go to "APIs & Services" → "Library"
-   - Search "Google Drive API" → Enable
-4. Create Service Account:
-   - Go to "APIs & Services" → "Credentials"
-   - Click "Create Credentials" → "Service Account"
-   - Name: `infobot-drive-reader`
-   - Click "Create and Continue" → "Done"
-5. Generate JSON Key:
-   - Click on the service account
-   - Go to "Keys" tab
-   - Click "Add Key" → "Create new key" → "JSON"
-   - Save the file securely
-
-##### 2A.2 Enable Domain-Wide Delegation
-
-1. In Google Cloud Console, go to your service account
-2. Click "Show Domain-Wide Delegation"
-3. Check "Enable Google Workspace Domain-wide Delegation"
-4. Enter product name: "InfoBot"
-5. Click "Save"
-6. **Copy the Client ID** (you'll need this)
-
-##### 2A.3 Authorize in Google Workspace Admin Console
-
-1. Go to [Google Workspace Admin Console](https://admin.google.com/)
-2. Navigate to: **Security** → **Access and data control** → **API controls**
-3. Click **"Manage Domain Wide Delegation"**
-4. Click **"Add new"**
-5. Enter:
-   - **Client ID**: (from step 2A.2)
-   - **OAuth Scopes**: `https://www.googleapis.com/auth/drive.readonly`
-6. Click **"Authorize"**
-
-✅ **You're done!** All files in your organization are now accessible.
-
----
-
-#### Option B: Manual Sharing (Alternative)
-
-##### 2B.1 Create Service Account
-
-Follow steps 2A.1 (same as above)
-
-##### 2B.2 Share Folders
-
-1. Open the JSON key file
-2. Find `client_email` (e.g., `your-service@project.iam.gserviceaccount.com`)
-3. Go to Google Drive
-4. Share folders with this email:
-   - Right-click folder → "Share"
-   - Add service account email
-   - Set permission to "Viewer"
-   - Uncheck "Notify people"
-
-**Tip**: Create one main folder and share it. All subfolders will be accessible!
-
----
-
-### Step 3: Confluence Setup
-
-**InfoBot automatically discovers ALL accessible Confluence spaces!**
-
-#### 3.1 Generate API Token
-
-1. Go to https://id.atlassian.com/manage-profile/security/api-tokens
-2. Click **"Create API token"**
-3. Label: `InfoBot`
-4. Click **"Create"** and copy the token
-
-#### 3.2 Get Confluence URL
-
-Your Confluence URL format:
-- Example: `https://your-company.atlassian.net/wiki/spaces/...`
-- Base URL: `https://your-company.atlassian.net`
-
-**Important**: Do NOT include `/wiki` at the end!
-
-#### 3.3 Grant Space Access
-
-Make sure your Confluence user has "View" permission on the spaces you want to index:
-
-1. Go to each Confluence space
-2. Click **Space settings** (gear icon)
-3. Click **Permissions**
-4. Verify your user has "View" access
-
-**Note**: InfoBot will automatically fetch all spaces you have access to. No need to list them individually!
-
----
-
-### Step 4: AI API Keys
-
-You need **at least one** (both is better for fallback):
-
-#### Option A: Anthropic Claude (Recommended)
-
-1. Go to https://console.anthropic.com/
-2. Sign up or log in
-3. Go to "API Keys"
-4. Click "Create Key"
-5. Name: `InfoBot`
-6. Copy the key (starts with `sk-ant-`)
-
-**Pricing**: ~$3 per million input tokens
-
-#### Option B: OpenAI GPT
-
-1. Go to https://platform.openai.com/
-2. Sign up or log in
-3. Click profile icon → "View API keys"
-4. Click "Create new secret key"
-5. Name: `InfoBot`
-6. Copy the key (starts with `sk-`)
-
-**Pricing**: ~$0.50 per million input tokens
-
----
-
-### Step 5: Environment Variables
-
-#### 5.1 Create `.env` File
-
-```bash
-cp .env.example .env
-nano .env
+# InfoBot - Slack Document Q&A Agent
+
+**Powered by Google Gemini 2.0 Flash** 🚀
+
+An intelligent Slack bot that answers questions about your Google Drive documents and Confluence pages using advanced RAG (Retrieval-Augmented Generation) with Google's Gemini AI.
+
+## Features
+
+✨ **Intelligent Document Search**
+- Search through Google Drive documents (PDF, Word, Sheets, etc.)
+- Search through Confluence pages and spaces
+- Hybrid RAG approach using ChromaDB + Gemini 2.0 Flash
+
+🤖 **General Knowledge Assistant**
+- Answers general questions (math, facts, history, etc.)
+- Powered by Gemini 2.0 Flash with huge 1M token context window
+- No need for multiple AI services - one model for everything
+
+💬 **Flexible Communication**
+- Respond to @mentions in channels
+- Direct message (DM) support - chat with InfoBot privately
+- Thread-aware responses
+
+📊 **Auto-Sync**
+- Automatically syncs documents every 2 minutes
+- Manual refresh via `/refresh` command
+- Tracks document modifications to avoid reprocessing
+
+🔗 **Source Attribution**
+- Always includes source URLs in responses
+- Direct links to Google Drive files and Confluence pages
+- Clear, clickable references
+
+## Architecture
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│  Google Drive   │────▶│   Document       │────▶│   ChromaDB      │
+│  + Confluence   │     │   Processor      │     │  Vector Store   │
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+                                                           │
+                                                           ▼
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│  Slack User     │────▶│  Query Engine    │────▶│  Gemini 2.0     │
+│   Question      │     │                  │     │     Flash       │
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+                                │
+                                ▼
+                        ┌──────────────────┐
+                        │  Answer with     │
+                        │  Source URLs     │
+                        └──────────────────┘
 ```
 
-#### 5.2 Configure `.env`
+## Setup Guide
+
+### 1. Prerequisites
+
+- Python 3.9 or higher
+- Google Cloud Project (for service account)
+- Slack Workspace (admin access to create apps)
+- Gemini API Key
+
+### 2. Get Gemini API Key
+
+1. Visit **Google AI Studio**: https://aistudio.google.com/app/apikey
+2. Click **"Get API Key"** or **"Create API Key"**
+3. Select an existing Google Cloud project or create a new one
+4. Copy the generated API key
+5. Save it - you'll need it for the `.env` file
+
+**Cost**: Gemini 2.0 Flash is very affordable:
+- Input: $0.075 per 1M tokens
+- Output: $0.30 per 1M tokens
+- Free tier: 1,500 requests per day
+
+### 3. Google Drive Setup
+
+#### Create Service Account
+
+1. Go to **Google Cloud Console**: https://console.cloud.google.com/
+2. Select your project (or create a new one)
+3. Navigate to **IAM & Admin** → **Service Accounts**
+4. Click **"Create Service Account"**
+   - Name: `slack-agent-service-account`
+   - Description: Service account for InfoBot Slack agent
+5. Click **"Create and Continue"**
+6. Skip granting roles (not needed)
+7. Click **"Done"**
+
+#### Generate Service Account Key
+
+1. Click on the newly created service account
+2. Go to the **"Keys"** tab
+3. Click **"Add Key"** → **"Create new key"**
+4. Select **JSON** format
+5. Click **"Create"** - the JSON file will download
+6. Save this file securely
+
+#### Option A: Domain-Wide Delegation (Recommended for Organizations)
+
+If you're using Google Workspace, you can grant the service account access to all users' drives:
+
+1. In the service account details, note the **"Unique ID"** (long number)
+2. Go to **Google Admin Console**: https://admin.google.com
+3. Navigate to **Security** → **Access and data control** → **API Controls**
+4. Click **"Manage Domain Wide Delegation"**
+5. Click **"Add new"**
+6. Enter the service account's **Client ID** (from JSON key file)
+7. Add OAuth Scopes:
+   ```
+   https://www.googleapis.com/auth/drive.readonly
+   https://www.googleapis.com/auth/drive.metadata.readonly
+   ```
+8. Click **"Authorize"**
+
+In your `.env` file, set:
+```bash
+GOOGLE_DRIVE_DELEGATED_USER=your-admin-email@company.com
+```
+
+#### Option B: Manual Folder Sharing (For Personal Use)
+
+1. Open Google Drive
+2. Right-click the folders you want InfoBot to access
+3. Click **"Share"**
+4. Add the service account email (from the JSON key, looks like: `slack-agent-service-account@your-project.iam.gserviceaccount.com`)
+5. Set permission to **"Viewer"**
+6. Click **"Send"**
+
+In your `.env` file, leave this empty:
+```bash
+GOOGLE_DRIVE_DELEGATED_USER=
+```
+
+### 4. Confluence Setup (Optional)
+
+If you want to search Confluence pages:
+
+1. Go to **Confluence Settings** → **Personal Settings** → **Password**
+2. Click **"Create and manage API tokens"**
+3. Click **"Create API token"**
+4. Give it a name (e.g., "InfoBot")
+5. Copy the generated token
+
+### 5. Slack App Setup
+
+#### Create Slack App
+
+1. Go to **Slack API**: https://api.slack.com/apps
+2. Click **"Create New App"**
+3. Select **"From scratch"**
+4. App Name: `InfoBot`
+5. Select your workspace
+6. Click **"Create App"**
+
+#### Configure OAuth Scopes
+
+1. Go to **OAuth & Permissions** (left sidebar)
+2. Scroll to **"Bot Token Scopes"**
+3. Add these scopes:
+   - `app_mentions:read` - See messages that @mention your bot
+   - `chat:write` - Send messages
+   - `im:history` - View direct messages
+   - `im:read` - View basic DM info
+   - `im:write` - Send direct messages
+   - `channels:history` - View messages in public channels (if needed)
+   - `groups:history` - View messages in private channels (if needed)
+
+#### Enable Events
+
+1. Go to **Event Subscriptions** (left sidebar)
+2. Toggle **"Enable Events"** to **ON**
+3. Set **"Request URL"** to:
+   ```
+   https://your-domain.com/slack/events
+   ```
+   (Use ngrok for local testing: `https://abc123.ngrok.io/slack/events`)
+
+4. Under **"Subscribe to bot events"**, add:
+   - `app_mention` - Listen for @mentions
+   - `message.im` - Listen for direct messages
+
+5. Click **"Save Changes"**
+
+#### Enable App Home
+
+1. Go to **App Home** (left sidebar)
+2. Under **"Show Tabs"**, find **"Messages Tab"**
+3. Toggle **"Allow users to send Slash commands and messages from the messages tab"** to **ON**
+
+#### Install App to Workspace
+
+1. Go to **OAuth & Permissions**
+2. Click **"Install to Workspace"**
+3. Review permissions and click **"Allow"**
+4. Copy the **"Bot User OAuth Token"** (starts with `xoxb-`)
+
+#### Get Signing Secret
+
+1. Go to **Basic Information** (left sidebar)
+2. Scroll to **"App Credentials"**
+3. Copy the **"Signing Secret"**
+
+### 6. Application Setup
+
+#### Clone and Install
 
 ```bash
-# ======================
-# REQUIRED - Slack
-# ======================
-SLACK_BOT_TOKEN=xoxb-your-bot-token-from-step-1.4
-SLACK_SIGNING_SECRET=your-signing-secret-from-step-1.5
+# Clone the repository
+git clone <your-repo-url>
+cd slack-agent
 
-# ======================
-# REQUIRED - AI Service (At least one)
-# ======================
-ANTHROPIC_API_KEY=sk-ant-your-key-from-step-4
-OPENAI_API_KEY=sk-your-key-from-step-4
+# Create virtual environment
+python3 -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-# ======================
-# REQUIRED - Google Drive
-# ======================
-# Paste the entire JSON content from step 2.1.5 as a single line
-GOOGLE_SERVICE_ACCOUNT_KEY='{"type":"service_account","project_id":"your-project",...}'
+# Install dependencies
+pip install -r requirements.txt
+```
 
-# For Domain-Wide Delegation (Option A) - ADD THIS LINE:
-GOOGLE_DRIVE_DELEGATED_USER=admin@yourcompany.com
+#### Configure Environment
 
-# For Manual Sharing (Option B) - LEAVE THIS BLANK or REMOVE IT:
-# GOOGLE_DRIVE_DELEGATED_USER=
+1. Copy the example environment file:
+   ```bash
+   cp .env.example .env
+   ```
 
-# ======================
-# OPTIONAL - Confluence
-# ======================
-CONFLUENCE_BASE_URL=https://your-company.atlassian.net
+2. Edit `.env` and fill in your credentials:
+
+```bash
+# Slack Configuration
+SLACK_BOT_TOKEN=xoxb-your-actual-token-here
+SLACK_SIGNING_SECRET=your-actual-signing-secret-here
+SLACK_VERIFY_SIGNATURE=true
+
+# Gemini AI
+GEMINI_API_KEY=your-gemini-api-key-here
+
+# Google Drive
+GOOGLE_SERVICE_ACCOUNT_KEY='{"type":"service_account",...}'  # Paste entire JSON
+GOOGLE_DRIVE_DELEGATED_USER=admin@yourcompany.com  # Or leave empty for manual sharing
+
+# Confluence (Optional)
+CONFLUENCE_BASE_URL=https://yourcompany.atlassian.net
 CONFLUENCE_USERNAME=your-email@company.com
-CONFLUENCE_API_TOKEN=your-api-token-from-step-3.1
+CONFLUENCE_API_TOKEN=your-confluence-api-token
+CONFLUENCE_SPACES=  # Leave empty for all spaces
 
-# Leave empty to fetch ALL accessible spaces (recommended):
-CONFLUENCE_SPACES=
-
-# Or specify specific spaces (comma-separated):
-# CONFLUENCE_SPACES=DEV,PM,DOCS
-
-# ======================
 # Application Settings
-# ======================
 CHROMA_DB_PATH=./chroma_db
 PORT=8000
 DEBUG=False
 HOST=0.0.0.0
 ```
 
----
-
-## 🚀 Deployment
-
-### Local Development
-
-#### Installation
+#### Run the Application
 
 ```bash
-# 1. Clone repository
-git clone <repository-url>
-cd slack-agent
-
-# 2. Create virtual environment
-python3.11 -m venv venv
-source venv/bin/activate  # On macOS/Linux
-# OR
-venv\Scripts\activate     # On Windows
-
-# 3. Install dependencies
-pip install -r requirements.txt
-
-# 4. Configure environment
-cp .env.example .env
-nano .env  # Add your credentials
-
-# 5. Run the application
-./start.sh
-```
-
-#### For Local Testing with ngrok
-
-```bash
-# Terminal 1: Start the application
-./start.sh
-
-# Terminal 2: Start ngrok
-ngrok http 8000
-
-# Copy the ngrok URL and update Slack Event URL:
-# https://your-ngrok-url.ngrok.io/slack/events
-```
-
-#### View Logs
-
-```bash
-# Real-time logs
-tail -f nohup.out
-
-# Search for errors
-grep ERROR nohup.out
-```
-
-#### Stop Application
-
-```bash
-pkill -f "uvicorn main:app"
-```
-
----
-
-### Docker Deployment
-
-#### Build and Run
-
-```bash
-# Build and start
-docker-compose up -d
-
-# View logs
-docker-compose logs -f
-
-# Stop
-docker-compose down
-```
-
-#### Update Application
-
-```bash
-git pull
-docker-compose up -d --build
-```
-
----
-
-## 💬 Usage
-
-### System Commands
-
-```
-@InfoBot /status          - Check system status
-@InfoBot /refresh         - Manually refresh documents
-@InfoBot list documents   - Show all indexed documents
-@InfoBot how many documents - Show document statistics
-```
-
-### Document Questions
-
-```
-User: @InfoBot What are the company vacation policies?
-Bot: The company offers 20 days of paid vacation per year...
-     Here is the reference: [HR Policies](link)
-
-User: @InfoBot Summarize the Q3 roadmap
-Bot: The Q3 roadmap focuses on three key areas...
-     Here is the reference: [Product Roadmap](link)
-```
-
-### General Questions
-
-```
-User: @InfoBot What is Python?
-Bot: Python is a high-level programming language...
-
-User: @InfoBot How are you?
-Bot: I'm doing great! Ready to help with your documents.
-```
-
----
-
-## 📁 Supported File Types
-
-### Google Drive
-- Google Workspace: Docs, Sheets, Slides
-- Microsoft Office: Word (.docx), Excel (.xlsx), PowerPoint (.pptx)
-- Documents: PDF, TXT, Markdown
-- Data: CSV files
-
-### Confluence
-- Pages with formatting
-- Tables
-- Lists (bullet and numbered)
-- Code blocks
-
----
-
-## 🛠️ Troubleshooting
-
-### Bot Not Responding
-
-**Check:**
-1. Application is running: `curl http://localhost:8000/health`
-2. Slack Event URL is verified (green checkmark)
-3. Check logs: `tail -f nohup.out`
-
-**Fix:**
-```bash
-pkill -f "uvicorn main:app"
-./start.sh
-```
-
----
-
-### No Documents Found
-
-**For Google Drive:**
-
-**If using Domain-Wide Delegation:**
-1. Verify `GOOGLE_DRIVE_DELEGATED_USER` is set in `.env`
-2. Check domain-wide delegation is authorized in Admin Console
-3. Verify the scope is: `https://www.googleapis.com/auth/drive.readonly`
-4. Make sure the delegated user has access to files
-
-**If using Manual Sharing:**
-1. Verify folders are shared with service account email
-2. Check service account has "Viewer" permission
-3. Look in JSON key file for `client_email`
-
-**For Confluence:**
-1. Check your user has "View" permission on spaces
-2. Verify API token is valid
-3. Run the discovery script: `python scripts/list_confluence_spaces.py`
-
-**Fix:**
-```bash
-# Trigger manual refresh
-@InfoBot /refresh
-
-# Check logs
-tail -f nohup.out | grep -i "document\|error"
-```
-
----
-
-### Confluence Spaces Not Showing
-
-**Problem**: Some spaces are not being indexed
-
-**Solution**:
-1. Verify your Confluence user has access to those spaces
-2. Go to space → Settings → Permissions
-3. Ensure your user has "View" permission
-4. Restart application after granting access
-
-**Verify access:**
-```bash
-python scripts/list_confluence_spaces.py
-```
-
----
-
-### AI Model Errors (404)
-
-**Problem**: `Error code: 404 - model not found`
-
-**Solution**: The model you're trying to use isn't available with your API key.
-
-**For Anthropic:**
-- The app uses `claude-3-haiku-20240307` (most compatible)
-- If you get 404 errors, your API key might not have access
-- Try using OpenAI instead
-
-**For OpenAI:**
-- The app uses `gpt-3.5-turbo`
-- Check your API key has credits: https://platform.openai.com/settings/billing
-
----
-
-### Domain-Wide Delegation Not Working
-
-**Check:**
-1. Client ID is correctly authorized in Admin Console
-2. OAuth scope is: `https://www.googleapis.com/auth/drive.readonly`
-3. Delegated user email is correct in `.env`
-4. Service account has delegation enabled in Cloud Console
-
-**Verify in logs:**
-```bash
-tail -f nohup.out | grep -i delegation
+# Start the server
+python main.py
 ```
 
 You should see:
 ```
-INFO: Using domain-wide delegation with user: admin@yourcompany.com
+INFO:main:Starting Slack Document Agent...
+INFO:main:Configuration validated successfully
+INFO:app.gemini_rag_handler:✅ Gemini 2.0 Flash initialized successfully
+INFO:app.query_engine:✅ ChromaDB document processor initialized
+INFO:main:✅ Gemini AI + ChromaDB initialized successfully
+INFO:main:Document sync scheduler started (runs every 2 minutes)
 ```
 
----
+### 7. Testing
 
-## 🔒 Security Best Practices
+#### Test Direct Messages
 
-1. **Never commit `.env` file** (already in `.gitignore`)
-2. **Use read-only scopes** for Google Drive and Confluence
-3. **Rotate API keys** every 90 days
-4. **Monitor access logs** regularly
-5. **Use HTTPS** in production
-6. **Limit delegated user access** (don't use super admin unless necessary)
+1. In Slack, click **"Apps"** in the left sidebar
+2. Find **"InfoBot"**
+3. Send a message: `Hello!`
+4. InfoBot should respond!
 
----
+#### Test in Channels
 
-## 📊 Monitoring
+1. Invite InfoBot to a channel: `/invite @InfoBot`
+2. Mention it: `@InfoBot what is 2+2?`
+3. InfoBot should respond!
 
-### Health Check
+#### Test Document Search
 
-```bash
-curl http://localhost:8000/health
+1. Make sure documents are synced (wait 2 minutes or use `/refresh`)
+2. Ask: `@InfoBot tell me about [topic in your documents]`
+3. InfoBot should respond with an answer and source URLs!
+
+## Usage
+
+### Commands
+
+- **`/refresh`** - Manually refresh document index
+- **`/status`** - Check bot status and document count
+
+### Example Queries
+
+**General Knowledge:**
+```
+What is 2+2?
+When is Independence Day?
+How many days in a year?
+Tell me about World War 2
 ```
 
-Expected response:
-```json
-{
-  "status": "healthy",
-  "documents_indexed": 15,
-  "ai_models": ["Claude (Anthropic)"],
-  "version": "1.0.0"
-}
+**Document Search:**
+```
+Tell me about the Q4 sales report
+What are the requirements for project X?
+Find information about user authentication
+Show me the vacation policy
 ```
 
-### View Logs
-
-```bash
-# Real-time logs
-tail -f nohup.out
-
-# Last 100 lines
-tail -100 nohup.out
-
-# Search for errors
-grep -i error nohup.out
+**System Info:**
+```
+How many documents do you have?
+What can you do?
+Help me
 ```
 
----
+## Troubleshooting
 
-## 📚 Project Structure
+### Bot Not Responding to DMs
+
+**Issue**: "Sending messages to this app has been turned off"
+
+**Solution**:
+1. Go to Slack App settings → **App Home**
+2. Enable **"Messages Tab"**
+3. Toggle **"Allow users to send Slash commands and messages from the messages tab"** to ON
+
+### No Documents Found
+
+**Issue**: Bot says "I don't have enough information"
+
+**Solution**:
+1. Check if documents are synced: Send `/status`
+2. Manually refresh: Send `/refresh`
+3. Check logs for errors in document fetching
+4. Verify Google Drive/Confluence credentials
+
+### Gemini API Errors
+
+**Issue**: "Error generating answer"
+
+**Solution**:
+1. Verify Gemini API key is correct
+2. Check API quota: https://aistudio.google.com/app/apikey
+3. Ensure billing is enabled (free tier has limits)
+
+### Google Drive 403 Errors
+
+**Issue**: "Permission denied" when accessing Drive
+
+**Solution**:
+- **Domain-wide delegation**: Verify delegation is set up correctly in Admin Console
+- **Manual sharing**: Make sure folders are shared with the service account email
+
+## Architecture Details
+
+### Components
+
+1. **Google Drive Handler** (`google_drive_handler.py`)
+   - Fetches documents from Google Drive
+   - Supports: PDF, Word, Sheets, Docs, etc.
+
+2. **Confluence Handler** (`confluence_handler.py`)
+   - Fetches pages from Confluence
+   - Supports all space types
+
+3. **Document Processor** (`document_processor.py`)
+   - Processes documents into chunks
+   - Stores embeddings in ChromaDB
+   - Uses OpenAI embeddings for similarity search
+
+4. **Gemini RAG Handler** (`gemini_rag_handler.py`)
+   - Handles queries with Gemini 2.0 Flash
+   - Generates answers with context
+   - Formats responses with source URLs
+
+5. **Query Engine** (`query_engine.py`)
+   - Orchestrates retrieval + generation
+   - Handles special queries (greetings, system info)
+   - Returns formatted responses
+
+### RAG Flow
+
+1. **User asks a question** in Slack
+2. **Query Engine** searches ChromaDB for relevant documents
+3. **Top 8-10 documents** are retrieved based on similarity
+4. **Gemini 2.0 Flash** receives:
+   - User's question
+   - Retrieved document context
+5. **Gemini generates** an answer based on context
+6. **Response is formatted** with source URLs
+7. **User receives** answer with clickable references
+
+### Why Gemini 2.0 Flash?
+
+- **1M token context window** - can handle many documents at once
+- **Fast and affordable** - $0.075 per 1M input tokens
+- **Excellent comprehension** - understands complex queries
+- **Single model** - handles both documents and general queries
+- **Built-in safety** - configurable content filtering
+
+## Development
+
+### Project Structure
 
 ```
 slack-agent/
 ├── app/
-│   ├── confluence_handler.py      # Confluence API integration
-│   ├── document_processor.py      # Document chunking
-│   ├── google_drive_handler.py    # Google Drive API integration
-│   ├── query_engine.py            # RAG and AI responses
-│   └── vector_store.py            # ChromaDB vector database
-├── scripts/
-│   └── list_confluence_spaces.py  # Discover Confluence spaces
-├── main.py                        # FastAPI application
-├── config.py                      # Configuration management
-├── requirements.txt               # Python dependencies
-├── start.sh                       # Startup script
-├── Dockerfile                     # Docker image
-├── docker-compose.yml             # Docker services
-├── .env.example                   # Environment template
-└── README.md                      # This file
+│   ├── confluence_handler.py     # Confluence API integration
+│   ├── document_processor.py     # Document chunking + ChromaDB
+│   ├── gemini_rag_handler.py     # Gemini AI integration
+│   ├── google_drive_handler.py   # Google Drive API integration
+│   ├── query_engine.py           # Query orchestration
+│   └── vector_store.py           # ChromaDB wrapper
+├── main.py                       # FastAPI server + Slack events
+├── config.py                     # Configuration management
+├── requirements.txt              # Python dependencies
+├── .env.example                  # Environment template
+└── README.md                     # This file
 ```
+
+### Running in Development
+
+```bash
+# With auto-reload
+python main.py
+
+# Or with uvicorn directly
+uvicorn main:app --reload --port 8000
+```
+
+### Testing with ngrok
+
+```bash
+# Install ngrok: https://ngrok.com/download
+ngrok http 8000
+
+# Update Slack Event URL with ngrok URL:
+# https://abc123.ngrok.io/slack/events
+```
+
+## Deployment
+
+### Docker (Recommended)
+
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+CMD ["python", "main.py"]
+```
+
+```bash
+# Build and run
+docker build -t infobot .
+docker run -p 8000:8000 --env-file .env infobot
+```
+
+### Production Checklist
+
+- [ ] Set `SLACK_VERIFY_SIGNATURE=true` in `.env`
+- [ ] Use HTTPS (required for Slack events)
+- [ ] Set up proper logging and monitoring
+- [ ] Configure firewall to allow only Slack IPs
+- [ ] Enable Gemini API billing and set quotas
+- [ ] Regularly backup ChromaDB data
+- [ ] Set up health checks at `/health`
+
+## Cost Estimation
+
+### Gemini AI
+- **Free Tier**: 1,500 requests/day
+- **Paid**: ~$0.08 per 1M tokens (input)
+- **Typical query**: 10,000 tokens = $0.0008 (less than a cent!)
+
+### For 100 queries/day with 2000 documents:
+- **Monthly cost**: ~$2-5 (extremely affordable)
+
+## License
+
+MIT License - See LICENSE file for details
+
+## Support
+
+For issues, questions, or contributions:
+- GitHub Issues: [your-repo-url]/issues
+- Email: support@yourcompany.com
+
+## Credits
+
+Built with:
+- **Google Gemini 2.0 Flash** - AI model
+- **ChromaDB** - Vector database
+- **Slack SDK** - Slack integration
+- **FastAPI** - Web framework
+- **Google Drive API** - Document access
+- **Confluence API** - Knowledge base access
 
 ---
 
-## 🔧 Advanced Configuration
+**Enjoy using InfoBot!** 🎉
 
-### Adjust Sync Frequency
-
-Edit `main.py` line ~53:
-
-```python
-trigger=IntervalTrigger(minutes=5)  # Changed from 2
-```
-
-### Change AI Model
-
-Edit `app/query_engine.py` line ~290 and ~339:
-
-```python
-model="claude-3-opus-20240229"  # For more powerful responses
-```
-
-### Limit Search Results
-
-Edit `app/query_engine.py` line ~35:
-
-```python
-self.max_search_results = 3  # Reduced from 5
-```
-
----
-
-## 🆘 Support
-
-For issues:
-
-1. ✅ Check this README thoroughly
-2. ✅ Review [Troubleshooting](#-troubleshooting)
-3. ✅ Check logs: `tail -f nohup.out`
-4. ✅ Verify `.env` file has all required variables
-5. ✅ Test individual components
-
-
-**Built with ❤️ using FastAPI, ChromaDB, Claude AI, and OpenAI**
-
-🎉 **Your InfoBot is ready to help your team!**
+If you find this useful, please ⭐ star the repository!

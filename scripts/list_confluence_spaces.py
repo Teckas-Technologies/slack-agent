@@ -75,10 +75,10 @@ def main():
         print()
 
         # Generate environment variable suggestion
-        print("💡 To index ALL spaces, leave CONFLUENCE_SPACES empty in your .env file:")
+        print("💡 To index ALL spaces, leave CONFLUENCE_SPACES empty in your .env.backup file:")
         print("   CONFLUENCE_SPACES=")
         print()
-        print("💡 To index SPECIFIC spaces, set CONFLUENCE_SPACES in your .env file:")
+        print("💡 To index SPECIFIC spaces, set CONFLUENCE_SPACES in your .env.backup file:")
         space_keys = ','.join([space['key'] for space in spaces[:5]])
         if len(spaces) > 5:
             print(f"   CONFLUENCE_SPACES={space_keys},...")
