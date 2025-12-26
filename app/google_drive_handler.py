@@ -182,7 +182,7 @@ class GoogleDriveHandler:
             elif handler_type == 'pdf':
                 return self._extract_pdf(file_id)
             elif handler_type in ['docx', 'doc']:
-                return self._extract_word_doc(file_id)
+                return self._extract_word_doc(file_id, mime_type)  # Pass mime_type to detect old .doc
             elif handler_type in ['xlsx', 'xls']:
                 return self._extract_excel(file_id)
             elif handler_type == 'csv':
@@ -277,9 +277,30 @@ class GoogleDriveHandler:
             logger.error(f"Error extracting PDF {file_id}: {str(e)}")
             return {'content': '', 'error': str(e)}
 
-    def _extract_word_doc(self, file_id: str) -> Dict[str, Any]:
-        """Extract content from Word document"""
+    def _extract_word_doc(self, file_id: str, mime_type: str = None) -> Dict[str, Any]:
+        """Extract content from Word document (.docx or .doc)"""
         try:
+            # Check if it's an old .doc file (binary format)
+            if mime_type == 'application/msword':
+                # Old .doc format - use Google Drive export to convert to text
+                logger.info(f"Converting old .doc file {file_id} to text using Google Drive export")
+                try:
+                    request = self.service.files().export_media(fileId=file_id, mimeType='text/plain')
+                    file_io = io.BytesIO()
+                    downloader = MediaIoBaseDownload(file_io, request)
+
+                    done = False
+                    while not done:
+                        status, done = downloader.next_chunk()
+
+                    content = file_io.getvalue().decode('utf-8', errors='ignore')
+                    return {'content': content, 'type': 'text'}
+                except Exception as export_error:
+                    logger.warning(f"Could not export old .doc file {file_id} via Google Drive: {str(export_error)}")
+                    # Skip this file - old .doc format not supported
+                    return {'content': '', 'error': 'Old .doc format - skipped (use .docx instead)'}
+
+            # New .docx format - use python-docx
             from docx import Document
             content_bytes = self._download_file(file_id)
 
@@ -293,6 +314,12 @@ class GoogleDriveHandler:
             logger.warning("python-docx not installed, cannot extract Word documents")
             return {'content': '', 'error': 'python-docx not installed'}
         except Exception as e:
+            # If it's a "not a Word file" error, it's likely an old .doc file
+            error_msg = str(e).lower()
+            if 'not a word file' in error_msg or 'not a zip file' in error_msg:
+                logger.warning(f"Skipping unsupported Word format for {file_id}: {str(e)}")
+                return {'content': '', 'error': 'Unsupported Word format (old .doc) - skipped'}
+
             logger.error(f"Error extracting Word doc {file_id}: {str(e)}")
             return {'content': '', 'error': str(e)}
 

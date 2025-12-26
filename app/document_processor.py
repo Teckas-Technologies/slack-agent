@@ -56,7 +56,12 @@ class DocumentProcessor:
 
             logger.info(f"Content extraction result for {doc_name}: {type(content_result)}")
             if content_result.get('error'):
-                logger.error(f"Error extracting content from {doc_name}: {content_result['error']}")
+                error_msg = content_result['error']
+                # Check if this is an expected/skipped error (old .doc files, unsupported formats)
+                if 'skipped' in error_msg.lower() or 'old .doc format' in error_msg.lower():
+                    logger.info(f"Skipping {doc_name}: {error_msg}")
+                else:
+                    logger.error(f"Error extracting content from {doc_name}: {error_msg}")
                 return False
 
             content = content_result.get('content', '')

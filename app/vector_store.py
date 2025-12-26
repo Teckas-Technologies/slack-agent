@@ -4,7 +4,7 @@ import logging
 from typing import List, Dict, Any, Optional
 import chromadb
 from chromadb.config import Settings
-import openai
+from sentence_transformers import SentenceTransformer
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -14,7 +14,11 @@ class VectorStore:
     """Abstraction layer for vector database operations"""
 
     def __init__(self):
-        self.openai_client = openai.OpenAI(api_key=Config.OPENAI_API_KEY)
+        # Initialize local embedding model (no API key needed!)
+        logger.info("Loading local embedding model (all-MiniLM-L6-v2)...")
+        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+        logger.info("✅ Local embedding model loaded successfully")
+
         self.chroma_client = self._initialize_chromadb()
         self.collection = self._get_or_create_collection()
 
@@ -118,16 +122,27 @@ class VectorStore:
             # Search in ChromaDB
             results = self.collection.query(**search_params)
 
-            # Format results
+            # Format results with similarity scores
             search_results = []
             for i in range(len(results['ids'][0])):
+                distance = results['distances'][0][i] if 'distances' in results else 0
+                # Convert distance to similarity score (1 - normalized distance)
+                # ChromaDB uses L2 distance, typically range 0-2 for normalized embeddings
+                similarity_score = max(0, 1 - (distance / 2))
+
                 result = {
                     'id': results['ids'][0][i],
                     'content': results['documents'][0][i],
                     'metadata': results['metadatas'][0][i],
-                    'distance': results['distances'][0][i] if 'distances' in results else 0
+                    'distance': distance,
+                    'similarity': similarity_score
                 }
                 search_results.append(result)
+
+            # Log similarity scores for debugging
+            if search_results:
+                scores = [f"{r['similarity']:.3f}" for r in search_results[:5]]
+                logger.info(f"Top 5 similarity scores: {', '.join(scores)}")
 
             return search_results
 
@@ -207,71 +222,22 @@ class VectorStore:
             }
 
     def _generate_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Generate embeddings for text chunks"""
+        """Generate embeddings using local sentence-transformers model"""
         try:
-            if not Config.OPENAI_API_KEY:
-                logger.warning("No OpenAI API key configured, using simple text-based embeddings")
-                return self._generate_simple_embeddings(texts)
-
-            # Use OpenAI embeddings
-            response = self.openai_client.embeddings.create(
-                model="text-embedding-ada-002",
-                input=texts
+            # Use local sentence-transformers model
+            # This runs on your machine - no API calls, no costs!
+            embeddings = self.embedding_model.encode(
+                texts,
+                show_progress_bar=False,
+                convert_to_numpy=True
             )
 
-            embeddings = [item.embedding for item in response.data]
-            return embeddings
+            # Convert numpy arrays to lists for ChromaDB
+            return embeddings.tolist()
 
         except Exception as e:
-            logger.error(f"Error generating OpenAI embeddings: {str(e)}")
-            # Fall back to simple embeddings instead of zero embeddings
-            logger.info("Falling back to simple text-based embeddings")
-            return self._generate_simple_embeddings(texts)
-
-    def _generate_simple_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Generate simple embeddings based on text features when OpenAI is unavailable"""
-        import hashlib
-        import math
-
-        embeddings = []
-        for text in texts:
-            # Create a deterministic embedding based on text content
-            text_lower = text.lower()
-
-            # Use a hash-based approach for consistency
-            hash_obj = hashlib.md5(text_lower.encode())
-            hash_bytes = hash_obj.digest()
-
-            # Convert hash to normalized float values
-            embedding = []
-            for i in range(0, len(hash_bytes), 2):
-                # Use pairs of bytes to create float values
-                val = int.from_bytes(hash_bytes[i:i+2], 'big') / 65535.0
-                embedding.append(val)
-
-            # Pad or truncate to match OpenAI embedding size (1536)
-            target_size = 1536
-            while len(embedding) < target_size:
-                embedding.extend(embedding[:target_size - len(embedding)])
-            embedding = embedding[:target_size]
-
-            # Add some text-based features
-            word_count = len(text_lower.split())
-            char_count = len(text_lower)
-
-            # Normalize and add as features
-            embedding[0] = word_count / 1000.0  # Normalize word count
-            embedding[1] = char_count / 10000.0  # Normalize char count
-
-            # Add common keyword indicators
-            keywords = ['price', 'cost', 'plan', 'strategy', 'logistics', 'brand', 'market']
-            for i, keyword in enumerate(keywords):
-                if i + 2 < len(embedding):
-                    embedding[i + 2] = 1.0 if keyword in text_lower else 0.0
-
-            embeddings.append(embedding)
-
-        return embeddings
+            logger.error(f"Error generating embeddings: {str(e)}")
+            raise
 
     def clear_collection(self) -> bool:
         """Clear all documents from the collection"""
